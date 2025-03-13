@@ -1,3 +1,3 @@
 <div align="center">
-  <img src="l.webp" width="300" height="300" alt="Itachi Uchiha">
+  <img src="logo/logo.png" width="300" height="300" alt="UniinU.pump">
 </div>
