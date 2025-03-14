@@ -61,14 +61,7 @@ contract MemeCoin is ERC20, IMemeCoin {
         _burn(account, value);
     }
 
-    /**
-     * Finds the "creator" of the memecoin, which equates to the owner of the {Flaunch} ERC721. This
-     * means that if the NFT is traded, then the new holder would become the creator.
-     *
-     * @dev This also means that if the token is burned we can expect a zero-address response
-     *
-     * @return creator_ The "creator" of the memecoin
-     */
+
     function creator() external view override returns (address creator_) {
         INft nftinterface = INft(nftAddress_);
         uint256 tokenId = nftinterface.tokenId(address(this));

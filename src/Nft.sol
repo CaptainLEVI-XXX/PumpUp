@@ -98,25 +98,12 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
         _burn(msg.sender, _tokenId);
     }
 
-    /**
-     * Helpers to show the {Memecoin} address for the ERC721.
-     *
-     * @param _tokenId The token ID to get the {Memecoin} for
-     *
-     * @return address {Memecoin} address
-     */
+
     function memecoin(uint256 _tokenId) public view returns (address) {
         return tokenIdToAddress[_tokenId];
     }
 
-    /**
-     * Returns the Uniform Resource Identifier (URI) for token id.
-     *
-     * @dev We prevent the token from erroring if it was burned, and instead we just check against
-     * the current tokenId iteration we have stored.
-     *
-     * @param _tokenId The token ID to get the URI for
-     */
+ 
     function tokenURI(uint256 _tokenId) public view override returns (string memory) {
         // If we are ahead of our tracked tokenIds, then revert
         if (_tokenId == 0 || _tokenId >= nextTokenId) {
