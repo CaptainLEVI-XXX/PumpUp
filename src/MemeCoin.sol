@@ -61,7 +61,6 @@ contract MemeCoin is ERC20, IMemeCoin {
         _burn(account, value);
     }
 
-
     function creator() external view override returns (address creator_) {
         INft nftinterface = INft(nftAddress_);
         uint256 tokenId = nftinterface.tokenId(address(this));

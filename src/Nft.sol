@@ -98,12 +98,10 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
         _burn(msg.sender, _tokenId);
     }
 
-
     function memecoin(uint256 _tokenId) public view returns (address) {
         return tokenIdToAddress[_tokenId];
     }
 
- 
     function tokenURI(uint256 _tokenId) public view override returns (string memory) {
         // If we are ahead of our tracked tokenIds, then revert
         if (_tokenId == 0 || _tokenId >= nextTokenId) {
