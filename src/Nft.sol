@@ -11,28 +11,28 @@ import {Initializable} from "@solady/utils/Initializable.sol";
 contract Nft is Initializable, ERC721, SuperAdmin2Step {
     string internal name_ = "Capstone Project Nft";
     string internal symbol_ = "CPnft";
-    
+
     string public baseURI;
-    
+
     uint256 private nextTokenId = 1;
-    
+
     uint256 public constant MAX_FAIR_LAUNCH_TOKENS = 40e27;
-    
+
     mapping(uint256 => address) private tokenIdToAddress;
     address private poolStateManager;
-    
+
     error InvalidInitialSupply(uint256 supply);
     error PremineExceedsInitialAmount(uint256 premine, uint256 initialAmount);
-    
+
     constructor(string memory _baseUri) {
         _setSuperAdmin(msg.sender);
         baseURI = _baseUri;
     }
-    
+
     function initialize(address _poolStateManager) external onlySuperAdmin initializer {
         poolStateManager = _poolStateManager;
     }
-    
+
     /**
      * @notice Updates the base URI for the creator ERC721 tokens
      * @param _baseURI The new base URI
@@ -40,21 +40,21 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
     function setBaseURI(string memory _baseURI) external onlySuperAdmin {
         baseURI = _baseURI;
     }
-    
+
     /**
      * @notice Returns the ERC721 name
      */
     function name() public view override returns (string memory) {
         return name_;
     }
-    
+
     /**
      * @notice Returns the ERC721 symbol
      */
     function symbol() public view override returns (string memory) {
         return symbol_;
     }
-    
+
     /**
      * @notice Launches a new memecoin and mints an NFT to the creator
      * @param params Launch parameters from PoolStateManager
@@ -75,27 +75,27 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
             revert PremineExceedsInitialAmount(params.premineAmount, params.initialSupply);
         }
         */
-        
+
         // Store the current token ID and increment
         _tokenId = nextTokenId;
         unchecked {
             nextTokenId++;
         }
-        
+
         // Mint ownership token to the creator
         _mint(params.creator, _tokenId);
-        
+
         // Deploy new memecoin with metadata
         MemeCoin memecoin = new MemeCoin(params.name, params.symbol, params.tokenUri);
         _memecoin = address(memecoin);
-        
+
         // Store the token ID to memecoin mapping
         tokenIdToAddress[_tokenId] = _memecoin;
-        
+
         // Mint initial supply to the PoolStateManager
         memecoin.mint(poolStateManager, params.initialSupply);
     }
-    
+
     /**
      * @notice Burns `tokenId` by sending it to `address(0)`
      * @param _tokenId The token ID to burn
@@ -103,7 +103,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
     function burn(uint256 _tokenId) public {
         _burn(msg.sender, _tokenId);
     }
-    
+
     /**
      * @notice Returns the memecoin address for a given token ID
      * @param _tokenId The token ID to check
@@ -112,7 +112,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
     function memecoin(uint256 _tokenId) public view returns (address) {
         return tokenIdToAddress[_tokenId];
     }
-    
+
     /**
      * @notice For interface compliance - get token ID for a memecoin
      * @param _memecoin Address of the memecoin
@@ -128,7 +128,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
         }
         return 0; // Return 0 if not found
     }
-    
+
     /**
      * @notice Returns the token URI for a given token ID
      * @param _tokenId The token ID to get URI for
@@ -139,12 +139,12 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
         if (_tokenId == 0 || _tokenId >= nextTokenId) {
             revert TokenDoesNotExist();
         }
-        
+
         // If the base URI is empty, return the memecoin token URI
         if (bytes(baseURI).length == 0) {
             return MemeCoin(tokenIdToAddress[_tokenId]).tokenURI();
         }
-        
+
         // Concatenate base URI and token ID
         return LibString.concat(baseURI, LibString.toString(_tokenId));
     }
