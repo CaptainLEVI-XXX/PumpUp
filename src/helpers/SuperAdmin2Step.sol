@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-// inspired from the @solady ------ A different implementation of Ownable2Step
+// inspired from the @solady ------ A different approach toward Ownable2Step
 
 abstract contract SuperAdmin2Step {
     /*                       CUSTOM ERRORS                        */

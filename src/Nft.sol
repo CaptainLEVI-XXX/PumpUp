@@ -7,8 +7,12 @@ import {IPoolStateManager} from "./interfaces/IPoolStateManager.sol";
 import {LibString} from "./libraries/LibString.sol";
 import {ERC721} from "@solady/tokens/ERC721.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
+
 
 contract Nft is Initializable, ERC721, SuperAdmin2Step {
+    using CustomRevert for bytes4;
+
     string internal name_ = "Capstone Project Nft";
     string internal symbol_ = "CPnft";
 
@@ -137,7 +141,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
     function tokenURI(uint256 _tokenId) public view override returns (string memory) {
         // Check if the token exists
         if (_tokenId == 0 || _tokenId >= nextTokenId) {
-            revert TokenDoesNotExist();
+             TokenDoesNotExist.selector.revertWith();
         }
 
         // If the base URI is empty, return the memecoin token URI
