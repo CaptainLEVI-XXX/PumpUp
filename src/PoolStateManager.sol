@@ -626,10 +626,12 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @notice Validate transition configuration
      * @param config Transition configuration to validate
      */
-    function _validateTransitionConfig(TransitionConfig memory config) internal {
+    function _validateTransitionConfig(TransitionConfig memory config) internal view{
         // For percentage-based transition, check if within range
         if (config.transitionType == TransitionType.Percentage) {
-            if (config.transitionData == 0 || config.transitionData > 10000) {
+
+            /// @notice didn't added check for  transitionData = 0 as this state represent it will not trasnitioned to v4-pools
+            if (config.transitionData > 10000) {
                 InvalidTransitionParams.selector.revertWith();
             }
         }
