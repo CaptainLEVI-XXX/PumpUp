@@ -3,12 +3,11 @@ pragma solidity ^0.8.26;
 
 import {MemeCoin} from "./MemeCoin.sol";
 import {SuperAdmin2Step} from "./helpers/SuperAdmin2Step.sol";
-import {IPoolStateManager} from "./interfaces/IPoolStateManager.sol";
+import {PoolStateManager} from "./PoolStateManager.sol";
 import {LibString} from "./libraries/LibString.sol";
 import {ERC721} from "@solady/tokens/ERC721.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
-
 
 contract Nft is Initializable, ERC721, SuperAdmin2Step {
     using CustomRevert for bytes4;
@@ -65,7 +64,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
      * @return _memecoin Address of the created memecoin
      * @return _tokenId ID of the minted NFT
      */
-    function launchMemeCoin(IPoolStateManager.LaunchParams calldata params)
+    function launchMemeCoin(PoolStateManager.LaunchParams calldata params)
         external
         returns (address _memecoin, uint256 _tokenId)
     {
@@ -141,7 +140,7 @@ contract Nft is Initializable, ERC721, SuperAdmin2Step {
     function tokenURI(uint256 _tokenId) public view override returns (string memory) {
         // Check if the token exists
         if (_tokenId == 0 || _tokenId >= nextTokenId) {
-             TokenDoesNotExist.selector.revertWith();
+            TokenDoesNotExist.selector.revertWith();
         }
 
         // If the base URI is empty, return the memecoin token URI

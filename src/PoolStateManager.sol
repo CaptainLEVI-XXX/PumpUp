@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SuperAdmin2Step} from "./helpers/SuperAdmin2Step.sol";
 import {ReentrancyGuardTransient} from "@solady/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {INft} from "./interfaces/INft.sol";
 import {IMemeCoin} from "./interfaces/IMemeCoin.sol";
 import {IStrategyManager} from "./interfaces/IStrategyManager.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
 /**
  * @title PoolStateManager
@@ -15,17 +16,21 @@ import {Initializable} from "@solady/utils/Initializable.sol";
  * @notice Manages the state for all token pools and handles token creation
  * @dev No trading functionality - that belongs in the hooks contract
  */
-contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
+contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initializable {
+    using CustomRevert for bytes4;
+
+    // ============ Enums ============
+
+    enum TransitionType {
+        Percentage,
+        Price,
+        Time
+    }
+
     // ============ Structs ============
 
     /**
      * @notice Parameters for launching a new memecoin
-     * @param name Token name
-     * @param symbol Token symbol
-     * @param tokenUri Token URI for metadata
-     * @param initialSupply Initial token supply
-     * @param creator Creator address
-     * @param premineAmount Amount to premine for creator
      */
     struct LaunchParams {
         string name;
@@ -34,188 +39,122 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
         uint256 initialSupply;
         address creator;
         uint256 premineAmount;
+        uint256 initialPrice;
     }
 
     /**
      * @notice Transition configuration
-     * @param transitionType Type of transition (1=percentage, 2=amount, 3=time)
-     * @param thresholdPercentage For percentage-based transition (in basis points)
-     * @param thresholdAmount For amount-based transition
-     * @param timeThreshold For time-based transition
-     * @param minWethLiquidity Minimum WETH liquidity required
-     * @param liquidityPercentage Percentage of WETH to use as liquidity (basis points)
-     * @param uniswapFeeType Fee type for Uniswap pool
-     * @param burnLpTokens Whether to burn LP tokens after transition
      */
     struct TransitionConfig {
-        uint8 transitionType;
-        uint256 thresholdPercentage;
-        uint256 thresholdAmount;
-        uint256 timeThreshold;
-        uint256 minWethLiquidity;
-        uint256 liquidityPercentage;
-        uint24 uniswapFeeType;
-        bool burnLpTokens;
+        TransitionType transitionType;
+        uint256 transitionData;
     }
 
     /**
-     * @notice Pool state information
-     * @param tokenAddress The memecoin token address
-     * @param nftId The NFT ID representing ownership
-     * @param wethAddress The WETH address used for this pool
-     * @param creator The creator of the pool
-     * @param isInitialized Whether the pool has been initialized
-     * @param isTransitioned Whether the pool has transitioned to AMM
-     * @param creationTimestamp When the pool was created
-     * @param totalSupply Total supply of the token
-     * @param circulatingSupply Amount of tokens in circulation
-     * @param wethCollected Amount of WETH collected from sales
-     * @param lastPrice Last calculated price (in WETH per token)
-     * @param bondingCurveStrategy ID of the bonding curve strategy
-     * @param transitionConfig Configuration for transition
-     * @param transitionAvailable Whether transition conditions are met
-     * @param ammPoolAddress Address of the AMM pool after transition
-     * @param transitionTimestamp When the transition occurred
-     * @param transitionPrice Price at transition
+     * @notice Pool state information with optimized layout to reduce storage slots
      */
     struct PoolState {
+        // Slot 1
         address tokenAddress;
-        uint256 nftId;
-        address wethAddress;
-        address creator;
         bool isInitialized;
         bool isTransitioned;
+        // Slot 2
+        uint256 nftId;
+        // Slot 3
+        address creator;
+        // Slot 4
         uint256 creationTimestamp;
-        
-        uint256 totalSupply;
-        uint256 circulatingSupply;
+        // Slot 5
         uint256 wethCollected;
+        // Slot 6
         uint256 lastPrice;
-        
+        // Slot 7
+        uint256 circulatingSupply;
+        // Slot 8
+        uint256 totalSupply;
+        // Slot 9
         bytes32 bondingCurveStrategy;
+        // Slot 10
         TransitionConfig transitionConfig;
-        bool transitionAvailable;
-        
-        address ammPoolAddress;
-        uint256 transitionTimestamp;
+        // Slot 11
         uint256 transitionPrice;
     }
 
     // ============ Events ============
 
-    /**
-     * @notice Emitted when a new pool is created
-     * @param poolId The ID of the pool
-     * @param tokenAddress The address of the memecoin token
-     * @param creator The address of the creator
-     * @param bondingCurveStrategy The ID of the bonding curve strategy
-     */
     event PoolCreated(
-        bytes32 indexed poolId,
-        address indexed tokenAddress,
-        address indexed creator,
-        bytes32 bondingCurveStrategy
+        bytes32 indexed poolId, address indexed tokenAddress, address indexed creator, bytes32 bondingCurveStrategy
     );
-    
-    /**
-     * @notice Emitted when a pool state is updated
-     * @param poolId The ID of the pool
-     * @param circulatingSupply New circulating supply
-     * @param wethCollected New amount of WETH collected
-     * @param lastPrice New token price
-     */
-    event PoolStateUpdated(
-        bytes32 indexed poolId,
-        uint256 circulatingSupply,
-        uint256 wethCollected,
-        uint256 lastPrice
-    );
-    
-    /**
-     * @notice Emitted when transition becomes available
-     * @param poolId The ID of the pool
-     * @param timestamp The timestamp when transition became available
-     */
-    event TransitionAvailable(
-        bytes32 indexed poolId,
-        uint256 timestamp
-    );
-    
-    /**
-     * @notice Emitted when a pool transitions to AMM
-     * @param poolId The ID of the pool
-     * @param ammPoolAddress The address of the new AMM pool
-     * @param transitionPrice The price at transition
-     */
-    event PoolTransitioned(
-        bytes32 indexed poolId,
-        address indexed ammPoolAddress,
-        uint256 transitionPrice
-    );
+
+    event PoolStateUpdated(bytes32 indexed poolId, uint256 circulatingSupply, uint256 wethCollected, uint256 lastPrice);
+
+    event TransitionAvailable(bytes32 indexed poolId, uint256 timestamp);
+
+    event PoolTransitioned(bytes32 indexed poolId, address indexed ammPoolAddress, uint256 transitionPrice);
 
     // ============ State Variables ============
 
     /// @notice Mapping from pool ID to pool state
     mapping(bytes32 => PoolState) public poolStates;
-    
+
     /// @notice Mapping from token address to pool ID
     mapping(address => bytes32) public tokenPoolIds;
-    
+
     /// @notice Mapping from creator address to pool IDs they created
     mapping(address => bytes32[]) public creatorPools;
-    
+
     /// @notice Mapping for strategy-specific data storage
     mapping(bytes32 => mapping(bytes32 => bytes)) public strategyData;
-    
+
     /// @notice Default WETH address
-    address public weth;
-    
+    address public immutable weth;
+
     /// @notice NFT contract for token ownership
     INft public nftContract;
-    
+
     /// @notice Strategy manager contract
     IStrategyManager public strategyManager;
-    
+
     /// @notice Pool creation fee
     uint256 public poolCreationFee;
-    
+
     /// @notice Hook contract address (for trading)
     address public hookContract;
-    
+
     /// @notice AVS contract for risk management
     address public avsContract;
-    
+
     /// @notice Authorized addresses that can update pool state
     mapping(address => bool) public authorizedAddresses;
 
     // ============ Errors ============
 
-    /// @notice Thrown when a pool already exists
     error PoolAlreadyExists();
-    
-    /// @notice Thrown when a pool is not found
     error PoolNotFound();
-    
-    /// @notice Thrown when a strategy is not found
     error StrategyNotFound();
-    
-    /// @notice Thrown when caller is not authorized
     error NotAuthorized();
-    
-    /// @notice Thrown when an address is invalid (zero)
     error InvalidAddress();
-    
-    /// @notice Thrown when pool creation fee is insufficient
     error InsufficientPoolCreationFee();
+    error InvalidTransitionParams();
 
     // ============ Modifiers ============
-    
+
     /**
      * @notice Only authorized addresses can call function
      */
     modifier onlyAuthorized() {
-        if (!authorizedAddresses[msg.sender] && msg.sender != owner()) {
+        if (!authorizedAddresses[msg.sender] && msg.sender != superAdmin()) {
             revert NotAuthorized();
+        }
+        _;
+    }
+
+    /**
+     * @notice Check if pool exists
+     */
+    modifier poolExists(bytes32 poolId) {
+        if (!poolStates[poolId].isInitialized) {
+            revert PoolNotFound();
         }
         _;
     }
@@ -228,16 +167,13 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
      * @param _weth The WETH address
      * @param _poolCreationFee Fee for creating a pool
      */
-    constructor(
-        address _owner,
-        address _weth,
-        uint256 _poolCreationFee
-    ) Ownable(_owner) {
-        if (_weth == address(0)) revert InvalidAddress();
+    constructor(address _owner, address _weth, uint256 _poolCreationFee) {
+        if (_weth == address(0)) InvalidAddress.selector.revertWith();
         weth = _weth;
         poolCreationFee = _poolCreationFee;
+        _setSuperAdmin(_owner);
     }
-    
+
     /**
      * @notice Initialize the contract (for proxy implementations)
      * @param _nftContract The NFT contract address
@@ -245,21 +181,20 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
      * @param _hookContract The hook contract address
      * @param _avsContract The AVS contract address
      */
-    function initialize(
-        address _nftContract,
-        address _strategyManager,
-        address _hookContract,
-        address _avsContract
-    ) external initializer onlyOwner {
-        if (_nftContract == address(0) || 
-            _strategyManager == address(0) || 
-            _hookContract == address(0)) revert InvalidAddress();
-        
+    function initialize(address _nftContract, address _strategyManager, address _hookContract, address _avsContract)
+        external
+        initializer
+        onlySuperAdmin
+    {
+        if (_nftContract == address(0) || _strategyManager == address(0) || _hookContract == address(0)) {
+            InvalidAddress.selector.revertWith();
+        }
+
         nftContract = INft(_nftContract);
         strategyManager = IStrategyManager(_strategyManager);
         hookContract = _hookContract;
         avsContract = _avsContract;
-        
+
         // Authorize the hook contract to update pool state
         authorizedAddresses[_hookContract] = true;
     }
@@ -280,257 +215,280 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
         TransitionConfig calldata transitionConfig
     ) external payable nonReentrant returns (bytes32 poolId, address tokenAddress) {
         // Check if payment is sufficient
-        if (msg.value < poolCreationFee) revert InsufficientPoolCreationFee();
-        
+        if (msg.value < poolCreationFee) {
+            InsufficientPoolCreationFee.selector.revertWith();
+        }
+
         // Check if the bonding curve strategy exists
         address curveImplementation = strategyManager.getStrategyImplementation(bondingCurveStrategy);
-        if (curveImplementation == address(0)) revert StrategyNotFound();
-        
+        if (curveImplementation == address(0)) {
+            StrategyNotFound.selector.revertWith();
+        }
+
+        // Validate launch parameters
+        if (launchParams.initialSupply == 0) {
+            InvalidTransitionParams.selector.revertWith();
+        }
+
+        // Validate transition config
+        _validateTransitionConfig(transitionConfig);
+
         // Make sender the creator if not specified
         address creator = launchParams.creator == address(0) ? msg.sender : launchParams.creator;
-        
+        uint256 nftId;
+
         // Launch the memecoin via the NFT contract
-        (tokenAddress, uint256 nftId) = nftContract.launchMemeCoin(launchParams);
-        
-        // Generate pool ID (hash of token address)
-        poolId = keccak256(abi.encodePacked(tokenAddress));
-        
+        (tokenAddress, nftId) = nftContract.launchMemeCoin(launchParams);
+
+        // Generate pool ID (hash of token address and NFT ID)
+        poolId = keccak256(abi.encodePacked(tokenAddress, nftId));
+
         // Check if pool already exists
-        if (tokenPoolIds[tokenAddress] != bytes32(0)) revert PoolAlreadyExists();
-        
+        if (tokenPoolIds[tokenAddress] != bytes32(0)) {
+            PoolAlreadyExists.selector.revertWith();
+        }
+
         // Initialize pool state
-        PoolState storage state = poolStates[poolId];
-        state.tokenAddress = tokenAddress;
-        state.nftId = nftId;
-        state.wethAddress = weth;
-        state.creator = creator;
-        state.isInitialized = true;
-        state.isTransitioned = false;
-        state.creationTimestamp = block.timestamp;
-        state.totalSupply = launchParams.initialSupply;
-        state.circulatingSupply = launchParams.premineAmount;
-        state.wethCollected = 0;
-        state.lastPrice = 0; // Will be set by the hook
-        state.bondingCurveStrategy = bondingCurveStrategy;
-        state.transitionConfig = transitionConfig;
-        state.transitionAvailable = false;
-        
+        _initializePoolState(
+            poolId,
+            tokenAddress,
+            nftId,
+            creator,
+            launchParams.initialSupply,
+            launchParams.initialPrice,
+            bondingCurveStrategy,
+            transitionConfig
+        );
+
         // Store mappings
         tokenPoolIds[tokenAddress] = poolId;
         creatorPools[creator].push(poolId);
-        
+
         // Increment strategy usage count
         strategyManager.incrementUsageCount(bondingCurveStrategy);
-        
+
         // Refund excess ETH
         if (msg.value > poolCreationFee) {
-            (bool success, ) = payable(msg.sender).call{value: msg.value - poolCreationFee}("");
+            (bool success,) = payable(msg.sender).call{value: msg.value - poolCreationFee}("");
             require(success, "Refund failed");
         }
-        
+
         emit PoolCreated(poolId, tokenAddress, creator, bondingCurveStrategy);
-        
+
         return (poolId, tokenAddress);
     }
-    
-    /**
-     * @notice Update pool state after a token purchase or sale (only callable by authorized addresses)
-     * @param poolId The ID of the pool
-     * @param circulatingSupplyDelta Change in circulating supply (positive for buys, negative for sells)
-     * @param wethCollectedDelta Change in WETH collected (positive for buys, negative for sells)
-     * @param newPrice New token price
-     */
-    function updatePoolState(
-        bytes32 poolId,
-        int256 circulatingSupplyDelta,
-        int256 wethCollectedDelta,
-        uint256 newPrice
-    ) external onlyAuthorized {
-        PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
-        
-        // Update state based on deltas
-        if (circulatingSupplyDelta > 0) {
-            state.circulatingSupply += uint256(circulatingSupplyDelta);
-        } else {
-            state.circulatingSupply -= uint256(-circulatingSupplyDelta);
-        }
-        
-        if (wethCollectedDelta > 0) {
-            state.wethCollected += uint256(wethCollectedDelta);
-        } else {
-            state.wethCollected -= uint256(-wethCollectedDelta);
-        }
-        
-        state.lastPrice = newPrice;
-        
-        emit PoolStateUpdated(
-            poolId, 
-            state.circulatingSupply, 
-            state.wethCollected, 
-            newPrice
-        );
-        
-        // Check if transition conditions are met
-        checkTransitionConditions(poolId);
-    }
-    
-    /**
-     * @notice Set a pool as transitioned to AMM (only callable by authorized addresses)
-     * @param poolId The ID of the pool
-     * @param ammPoolAddress The address of the new AMM pool
-     */
-    function setPoolTransitioned(
-        bytes32 poolId,
-        address ammPoolAddress
-    ) external onlyAuthorized {
-        PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
-        
-        state.isTransitioned = true;
-        state.ammPoolAddress = ammPoolAddress;
-        state.transitionTimestamp = block.timestamp;
-        state.transitionPrice = state.lastPrice;
-        
-        emit PoolTransitioned(poolId, ammPoolAddress, state.lastPrice);
-    }
-    
+
     /**
      * @notice Check if transition conditions are met and update state if they are
      * @param poolId The ID of the pool
      * @return Whether transition conditions are met
      */
-    function checkTransitionConditions(bytes32 poolId) public returns (bool) {
+    function checkTransitionConditions(bytes32 poolId) public poolExists(poolId) returns (bool) {
         PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
-        
-        if (state.isTransitioned || state.transitionAvailable) {
-            return state.transitionAvailable;
+
+        if (state.isTransitioned) {
+            return state.isTransitioned;
         }
-        
+
         bool conditionsMet = canTransition(poolId);
-        
-        if (conditionsMet && !state.transitionAvailable) {
-            state.transitionAvailable = true;
+
+        if (conditionsMet) {
             emit TransitionAvailable(poolId, block.timestamp);
         }
-        
+
         return conditionsMet;
     }
-    
+
     /**
      * @notice Store custom data for a strategy (only callable by authorized addresses)
      * @param poolId The ID of the pool
      * @param strategyId The ID of the strategy
      * @param data Custom data to store
      */
-    function setStrategyData(
-        bytes32 poolId,
-        bytes32 strategyId,
-        bytes calldata data
-    ) external onlyAuthorized {
+    function setStrategyData(bytes32 poolId, bytes32 strategyId, bytes calldata data)
+        external
+        onlyAuthorized
+        poolExists(poolId)
+    {
         strategyData[poolId][strategyId] = data;
     }
-    
+
+    /**
+     * @notice Update pool state (only callable by authorized addresses)
+     * @param poolId The ID of the pool
+     * @param circulatingSupply New circulating supply
+     * @param wethCollected New amount of WETH collected
+     * @param lastPrice New token price
+     */
+    function updatePoolState(bytes32 poolId, uint256 circulatingSupply, uint256 wethCollected, uint256 lastPrice)
+        external
+        onlyAuthorized
+        poolExists(poolId)
+    {
+        PoolState storage state = poolStates[poolId];
+
+        state.circulatingSupply = circulatingSupply;
+        state.wethCollected = wethCollected;
+        state.lastPrice = lastPrice;
+
+        emit PoolStateUpdated(poolId, circulatingSupply, wethCollected, lastPrice);
+    }
+
+    /**
+     * @notice Perform transition to AMM (only callable by authorized addresses)
+     * @param poolId The ID of the pool
+     * @param ammPoolAddress The address of the AMM pool
+     * @param transitionPrice The price at transition
+     */
+    function setPoolTransitioned(bytes32 poolId, address ammPoolAddress, uint256 transitionPrice)
+        external
+        onlyAuthorized
+        poolExists(poolId)
+    {
+        PoolState storage state = poolStates[poolId];
+
+        if (state.isTransitioned) {
+            revert("Already transitioned");
+        }
+
+        state.isTransitioned = true;
+        state.transitionPrice = transitionPrice;
+
+        emit PoolTransitioned(poolId, ammPoolAddress, transitionPrice);
+    }
+
+    // ============ View Functions ============
+
     /**
      * @notice Check if a pool can transition to AMM
      * @param poolId The ID of the pool
      * @return Whether transition conditions are met
      */
-    function canTransition(bytes32 poolId) public view returns (bool) {
+    function canTransition(bytes32 poolId) public view poolExists(poolId) returns (bool) {
         PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
+
         if (state.isTransitioned) return false;
-        
+
         TransitionConfig memory config = state.transitionConfig;
-        
-        bool conditionsMet = false;
-        
-        // Check percentage-based condition
-        if (config.transitionType == 1) {
+
+        if (config.transitionType == TransitionType.Percentage) {
+            // Percentage of total supply that has been sold
+            if (state.totalSupply == 0) return false;
             uint256 percentageSold = (state.circulatingSupply * 10000) / state.totalSupply;
-            conditionsMet = percentageSold >= config.thresholdPercentage;
+            return percentageSold >= config.transitionData;
+        } else if (config.transitionType == TransitionType.Price) {
+            // Price-based transition - triggered when price reaches threshold
+            return state.lastPrice >= config.transitionData;
+        } else if (config.transitionType == TransitionType.Time) {
+            // Time-based transition - triggered at specific timestamp
+            return block.timestamp >= config.transitionData;
         }
-        // Check amount-based condition
-        else if (config.transitionType == 2) {
-            conditionsMet = state.circulatingSupply >= config.thresholdAmount;
-        }
-        // Check time-based condition
-        else if (config.transitionType == 3) {
-            conditionsMet = block.timestamp >= state.creationTimestamp + config.timeThreshold;
-        }
-        
-        // Check minimum WETH liquidity
-        if (conditionsMet && config.minWethLiquidity > 0) {
-            conditionsMet = state.wethCollected >= config.minWethLiquidity;
-        }
-        
-        return conditionsMet;
+
+        return false;
     }
-    
+
     /**
      * @notice Get custom data for a strategy
      * @param poolId The ID of the pool
      * @param strategyId The ID of the strategy
      * @return The stored data
      */
-    function getStrategyData(bytes32 poolId, bytes32 strategyId) external view returns (bytes memory) {
+    function getStrategyData(bytes32 poolId, bytes32 strategyId)
+        external
+        view
+        poolExists(poolId)
+        returns (bytes memory)
+    {
         return strategyData[poolId][strategyId];
     }
-    
+
     /**
      * @notice Get basic pool information
      * @param poolId The ID of the pool
      * @return tokenAddress The token address
-     * @return wethAddress The WETH address
      * @return creator The creator address
-     * @return circulatingSupply Current circulating supply
      * @return wethCollected WETH collected so far
      * @return lastPrice Last token price
      * @return isTransitioned Whether the pool has transitioned
      * @return bondingCurveStrategy The ID of the bonding curve strategy
      */
-    function getPoolInfo(bytes32 poolId) external view returns (
-        address tokenAddress,
-        address wethAddress,
-        address creator,
-        uint256 circulatingSupply,
-        uint256 wethCollected,
-        uint256 lastPrice,
-        bool isTransitioned,
-        bytes32 bondingCurveStrategy
-    ) {
+    function getPoolInfo(bytes32 poolId)
+        external
+        view
+        poolExists(poolId)
+        returns (
+            address tokenAddress,
+            address creator,
+            uint256 wethCollected,
+            uint256 lastPrice,
+            bool isTransitioned,
+            bytes32 bondingCurveStrategy
+        )
+    {
         PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
-        
+
         return (
             state.tokenAddress,
-            state.wethAddress,
             state.creator,
-            state.circulatingSupply,
             state.wethCollected,
             state.lastPrice,
             state.isTransitioned,
             state.bondingCurveStrategy
         );
     }
-    
+
+    /**
+     * @notice Get extended pool information (to avoid stack too deep errors)
+     * @param poolId The ID of the pool
+     * @return nftId The NFT ID
+     * @return creationTimestamp When the pool was created
+     * @return circulatingSupply Current circulating supply
+     * @return totalSupply Total token supply
+     * @return transitionPrice Price at transition
+     */
+    function getExtendedPoolInfo(bytes32 poolId)
+        external
+        view
+        poolExists(poolId)
+        returns (
+            uint256 nftId,
+            uint256 creationTimestamp,
+            uint256 circulatingSupply,
+            uint256 totalSupply,
+            uint256 transitionPrice
+        )
+    {
+        PoolState storage state = poolStates[poolId];
+
+        return (state.nftId, state.creationTimestamp, state.circulatingSupply, state.totalSupply, state.transitionPrice);
+    }
+
+    /**
+     * @notice Get transition config for a pool
+     * @param poolId The ID of the pool
+     * @return transitionType Type of transition
+     * @return transitionData Data for transition configuration
+     */
+    function getTransitionConfig(bytes32 poolId)
+        external
+        view
+        poolExists(poolId)
+        returns (TransitionType transitionType, uint256 transitionData)
+    {
+        TransitionConfig memory config = poolStates[poolId].transitionConfig;
+
+        return (config.transitionType, config.transitionData);
+    }
+
     /**
      * @notice Get transition information for a pool
      * @param poolId The ID of the pool
      * @return available Whether transition is available
-     * @return config The transition configuration
      */
-    function getTransitionInfo(bytes32 poolId) external view returns (
-        bool available,
-        TransitionConfig memory config
-    ) {
-        PoolState storage state = poolStates[poolId];
-        if (!state.isInitialized) revert PoolNotFound();
-        
-        return (state.transitionAvailable, state.transitionConfig);
+    function getTransitionInfo(bytes32 poolId) external view poolExists(poolId) returns (bool available) {
+        return canTransition(poolId);
     }
-    
+
     /**
      * @notice Get pool ID for a token
      * @param tokenAddress The token address
@@ -539,7 +497,7 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
     function getPoolIdForToken(address tokenAddress) external view returns (bytes32) {
         return tokenPoolIds[tokenAddress];
     }
-    
+
     /**
      * @notice Get all pools created by an address
      * @param creator The creator address
@@ -550,24 +508,27 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
     }
 
     // ============ Admin Functions ============
-    
+
     /**
      * @notice Set the pool creation fee
      * @param newFee New pool creation fee
      */
-    function setPoolCreationFee(uint256 newFee) external onlyOwner {
+    function setPoolCreationFee(uint256 newFee) external onlySuperAdmin {
         poolCreationFee = newFee;
     }
-    
+
     /**
      * @notice Authorize or deauthorize an address
      * @param addr The address to authorize/deauthorize
      * @param isAuthorized Whether the address should be authorized
      */
-    function setAuthorizedAddress(address addr, bool isAuthorized) external onlyOwner {
+    function setAuthorizedAddress(address addr, bool isAuthorized) external onlySuperAdmin {
+        if (addr == address(0)) {
+            InvalidAddress.selector.revertWith();
+        }
         authorizedAddresses[addr] = isAuthorized;
     }
-    
+
     /**
      * @notice Update contract references
      * @param _nftContract New NFT contract address
@@ -580,31 +541,111 @@ contract PoolStateManager is Ownable, ReentrancyGuard, Initializable {
         address _strategyManager,
         address _hookContract,
         address _avsContract
-    ) external onlyOwner {
-        if (_nftContract != address(0)) nftContract = INft(_nftContract);
-        if (_strategyManager != address(0)) strategyManager = IStrategyManager(_strategyManager);
+    ) external onlySuperAdmin {
+        if (_nftContract != address(0)) {
+            nftContract = INft(_nftContract);
+        }
+
+        if (_strategyManager != address(0)) {
+            strategyManager = IStrategyManager(_strategyManager);
+        }
+
         if (_hookContract != address(0)) {
             // Deauthorize old hook contract
             authorizedAddresses[hookContract] = false;
-            
+
             // Update and authorize new hook contract
             hookContract = _hookContract;
             authorizedAddresses[_hookContract] = true;
         }
-        if (_avsContract != address(0)) avsContract = _avsContract;
+
+        if (_avsContract != address(0)) {
+            avsContract = _avsContract;
+        }
     }
-    
+
     /**
      * @notice Withdraw ETH from the contract (only callable by owner)
      * @param amount Amount to withdraw
      * @param recipient Recipient address
      */
-    function withdrawETH(uint256 amount, address recipient) external onlyOwner {
-        if (recipient == address(0)) revert InvalidAddress();
+    function withdrawETH(uint256 amount, address recipient) external onlySuperAdmin nonReentrant {
+        if (recipient == address(0)) {
+            InvalidAddress.selector.revertWith();
+        }
+
         if (amount > address(this).balance) {
             amount = address(this).balance;
         }
-        (bool success, ) = recipient.call{value: amount}("");
+
+        (bool success,) = recipient.call{value: amount}("");
         require(success, "Transfer failed");
+    }
+
+    // ============ Internal Functions ============
+
+    /**
+     * @notice Initialize a new pool state
+     * @param poolId Pool ID
+     * @param tokenAddress Token address
+     * @param nftId NFT ID
+     * @param creator Creator address
+     * @param initialSupply Initial token supply
+     * @param initialPrice Initial token price
+     * @param bondingCurveStrategy Bonding curve strategy ID
+     * @param transitionConfig Transition configuration
+     */
+    function _initializePoolState(
+        bytes32 poolId,
+        address tokenAddress,
+        uint256 nftId,
+        address creator,
+        uint256 initialSupply,
+        uint256 initialPrice,
+        bytes32 bondingCurveStrategy,
+        TransitionConfig memory transitionConfig
+    ) internal {
+        PoolState storage state = poolStates[poolId];
+
+        state.tokenAddress = tokenAddress;
+        state.nftId = nftId;
+        state.creator = creator;
+        state.isInitialized = true;
+        state.isTransitioned = false;
+        state.creationTimestamp = block.timestamp;
+        state.wethCollected = 0;
+        state.lastPrice = initialPrice;
+        state.circulatingSupply = 0;
+        state.totalSupply = initialSupply;
+        state.bondingCurveStrategy = bondingCurveStrategy;
+        state.transitionConfig = transitionConfig;
+        state.transitionPrice = 0;
+    }
+
+    /**
+     * @notice Validate transition configuration
+     * @param config Transition configuration to validate
+     */
+    function _validateTransitionConfig(TransitionConfig memory config) internal {
+        // For percentage-based transition, check if within range
+        if (config.transitionType == TransitionType.Percentage) {
+            if (config.transitionData == 0 || config.transitionData > 10000) {
+                InvalidTransitionParams.selector.revertWith();
+            }
+        }
+        // For time-based transition, ensure future time
+        else if (config.transitionType == TransitionType.Time) {
+            if (config.transitionData <= block.timestamp) {
+                InvalidTransitionParams.selector.revertWith();
+            }
+        }
+        // For price-based transition, ensure non-zero
+        else if (config.transitionType == TransitionType.Price) {
+            if (config.transitionData == 0) {
+                InvalidTransitionParams.selector.revertWith();
+            }
+        } else {
+            InvalidTransitionParams.selector.revertWith();
+        }
     }
 }
