@@ -9,6 +9,11 @@ import {IMemeCoin} from "./interfaces/IMemeCoin.sol";
 import {IStrategyManager} from "./interfaces/IStrategyManager.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
+import {PoolKey} from '@uniswap/v4-core/src/types/PoolKey.sol';
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
+import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
+import {Hooks, IHooks} from '@uniswap/v4-core/src/libraries/Hooks.sol';
+import {IPoolManager} from '@uniswap/v4-core/src/interfaces/IPoolManager.sol';
 
 /**
  * @title PoolStateManager
@@ -18,6 +23,8 @@ import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
  */
 contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initializable {
     using CustomRevert for bytes4;
+     using PoolIdLibrary for PoolKey;
+     using CurrencyLibrary for Currency;
 
     // ============ Enums ============
 
@@ -105,6 +112,9 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
 
     /// @notice Mapping for strategy-specific data storage
     mapping(bytes32 => mapping(bytes32 => bytes)) public strategyData;
+
+    /// Maps our IERC20 token addresses to their registered PoolKey
+    mapping (address _memecoin => PoolKey _poolKey) internal _poolKeys;
 
     /// @notice Default WETH address
     address public immutable weth;
@@ -267,16 +277,46 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         // Increment strategy usage count
         strategyManager.incrementUsageCount(bondingCurveStrategy);
 
+        _initializeV4Pool(tokenAddress);
+
+     
+
         // Refund excess ETH
         if (msg.value > poolCreationFee) {
             (bool success,) = payable(msg.sender).call{value: msg.value - poolCreationFee}("");
             require(success, "Refund failed");
         }
 
+
         emit PoolCreated(poolId, tokenAddress, creator, bondingCurveStrategy);
 
         return (poolId, tokenAddress);
     }
+
+    function _initializeV4Pool(address tokenAddress) internal{
+
+          // Check if our pool currency is flipped
+        bool currencyFlipped = weth >= tokenAddress;
+
+         // Create our Uniswap pool and store the pool key for lookups
+        PoolKey memory _poolKey = PoolKey({
+            currency0: Currency.wrap(!currencyFlipped ? weth : tokenAddress),
+            currency1: Currency.wrap(currencyFlipped ? weth : tokenAddress),
+            fee: 0,
+            tickSpacing: 60,
+            hooks: IHooks(hookContract)
+        });
+
+        //storing the poolk key to tokenaAddress
+
+        _poolKeys[tokenAddress] = _poolKey;
+
+
+        // poolManager.initialize(_poolKey, Constants.SQRT_PRICE_1_1);
+
+        ///@notice need to check whether the pool is initialized
+
+    } 
 
     /**
      * @notice Check if transition conditions are met and update state if they are
