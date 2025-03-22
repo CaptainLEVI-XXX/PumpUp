@@ -120,10 +120,8 @@ contract PumpUpHook is Initializable, BaseHook {
 
         // Update liquidity tracking
         unchecked {
-            
-        
-        userLiquidity[msg.sender][liquidityParams.poolId] += liquidityParams.amountEach;
-        totalPoolLiquidity[liquidityParams.poolId] += liquidityParams.amountEach;
+            userLiquidity[msg.sender][liquidityParams.poolId] += liquidityParams.amountEach;
+            totalPoolLiquidity[liquidityParams.poolId] += liquidityParams.amountEach;
         }
         // Call to unlock for token transfers
         poolManager.unlock(
@@ -160,10 +158,10 @@ contract PumpUpHook is Initializable, BaseHook {
             InsufficientLiquidity.selector.revertWith();
         }
 
-        unchecked{
-        // Update liquidity tracking
-        userLiquidity[msg.sender][liquidityParams.poolId] -= liquidityParams.amountEach;
-        totalPoolLiquidity[liquidityParams.poolId] -= liquidityParams.amountEach;
+        unchecked {
+            // Update liquidity tracking
+            userLiquidity[msg.sender][liquidityParams.poolId] -= liquidityParams.amountEach;
+            totalPoolLiquidity[liquidityParams.poolId] -= liquidityParams.amountEach;
         }
         // Call to unlock for token transfers
         poolManager.unlock(
