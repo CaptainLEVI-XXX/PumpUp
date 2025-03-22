@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-// inspired from the @solady ------ A different approach toward Ownable2Step
+/// @notice inspired from the @solady ------ A different approach toward Ownable2Step
 
 abstract contract SuperAdmin2Step {
-    /*                       CUSTOM ERRORS                        */
-
     /// @dev The caller is not authorized to call the function.
     error SuperAdmin2Step_Unauthorized();
 
@@ -14,7 +12,6 @@ abstract contract SuperAdmin2Step {
 
     /// @dev Cannot double-initialize.
     error SuperAdmin2Step_NewAdminIsZeroAddress();
-    /*                           EVENTS                           */
 
     /// @dev The superAdminship is transferred from `oldSuperAdmin` to `newSuperAdmin`.
 
@@ -25,8 +22,6 @@ abstract contract SuperAdmin2Step {
 
     /// @dev The superAdminship handover to `pendingSuperAdmin` has been canceled.
     event SuperAdminshipHandoverCanceled(address indexed pendingSuperAdmin);
-
-    // /*                          STORAGE                           */
 
     /// @dev The superAdmin slot is given by:
 
@@ -39,11 +34,9 @@ abstract contract SuperAdmin2Step {
     bytes32 internal constant _HANDOVERTIME_SUPERADMINSLOT_SEED =
         0x6550ab69b2fd0d6b77d1a3569484949e74afb818f9de20661d5d5d6082bcd5de;
 
-    /*                     INTERNAL FUNCTIONS                     */
-
     /// @dev Sets the superAdmin directly without authorization guard.
     function _setSuperAdmin(address _newSuperAdmin) internal virtual {
-        assembly {
+        assembly ("memory-safe") {
             if eq(_newSuperAdmin, 0) {
                 // Load pre-defined error selector for zero address
                 mstore(0x00, 0x4869eb34) // NewSuperAdminIsZeroAddress error
@@ -61,12 +54,9 @@ abstract contract SuperAdmin2Step {
         }
     }
 
-    /*                     PUBLIC FUNCTIONS                     */
-
     /// @dev Throws if the sender is not the superAdmin.
     function _checkSuperAdmin() internal view virtual {
-        /// @solidity memory-safe-assembly
-        assembly {
+        assembly ("memory-safe") {
             // If the caller is not the stored superAdmin, revert.
             if iszero(eq(caller(), sload(_SUPERADMIN_SLOT))) {
                 mstore(0x00, 0x591f9739) // `SuperAdmin2Step_Unauthorized()`.
@@ -81,15 +71,13 @@ abstract contract SuperAdmin2Step {
     function _superAdminHandoverValidFor() internal view virtual returns (uint64) {
         return 3 * 86400;
     }
-    /*                  PUBLIC UPDATE FUNCTIONS                   */
 
     /// @dev Request a two-step superAdminship handover to the caller.
     /// The request will automatically expire in 72 hoursby default.
     function requestSuperAdminTransfer(address _pendingOwner) public virtual onlySuperAdmin {
         unchecked {
             uint256 expires = block.timestamp + _superAdminHandoverValidFor();
-            /// @solidity memory-safe-assembly
-            assembly {
+            assembly ("memory-safe") {
                 sstore(_PENDINGSUPERADMIN_SLOT, _pendingOwner)
                 sstore(_HANDOVERTIME_SUPERADMINSLOT_SEED, expires)
                 // Emit the {SuperAdminshipHandoverRequested} event.
@@ -100,8 +88,7 @@ abstract contract SuperAdmin2Step {
 
     /// @dev Cancels the two-step superAdminship handover to the caller, if any.
     function cancelSuperAdminTransfer() public virtual onlySuperAdmin {
-        /// @solidity memory-safe-assembly
-        assembly {
+        assembly ("memory-safe") {
             // Compute and set the handover slot to 0.
             sstore(_PENDINGSUPERADMIN_SLOT, 0x0)
             sstore(_HANDOVERTIME_SUPERADMINSLOT_SEED, 0x0)
@@ -116,7 +103,7 @@ abstract contract SuperAdmin2Step {
         /// @solidity memory-safe-assembly
 
         address pendingAdmin;
-        assembly {
+        assembly ("memory-safe") {
             pendingAdmin := sload(_PENDINGSUPERADMIN_SLOT)
 
             // Check that the sender is the pending admin
@@ -135,25 +122,21 @@ abstract contract SuperAdmin2Step {
         }
         _setSuperAdmin(pendingAdmin);
     }
-    /*                   PUBLIC READ FUNCTIONS                    */
 
     /// @dev Returns the superAdmin of the contract.
     function superAdmin() public view virtual returns (address result) {
-        /// @solidity memory-safe-assembly
-        assembly {
+        assembly ("memory-safe") {
             result := sload(_SUPERADMIN_SLOT)
         }
     }
 
     /// @dev Returns the expiry timestamp for the two-step superAdminship handover to `pendingSuperAdmin`.
     function superAdminHandoverExpiresAt() public view virtual returns (uint256 result) {
-        /// @solidity memory-safe-assembly
-        assembly {
+        assembly ("memory-safe") {
             // Load the handover slot.
             result := sload(keccak256(0x0c, 0x20))
         }
     }
-    /*                         MODIFIERS                          */
 
     /// @dev Marks a function as only callable by the superAdmin.
     modifier onlySuperAdmin() virtual {

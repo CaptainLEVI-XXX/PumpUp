@@ -9,11 +9,11 @@ import {IMemeCoin} from "./interfaces/IMemeCoin.sol";
 import {IStrategyManager} from "./interfaces/IStrategyManager.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
-import {PoolKey} from '@uniswap/v4-core/src/types/PoolKey.sol';
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
-import {Hooks, IHooks} from '@uniswap/v4-core/src/libraries/Hooks.sol';
-import {IPoolManager} from '@uniswap/v4-core/src/interfaces/IPoolManager.sol';
+import {Hooks, IHooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 
 /**
  * @title PoolStateManager
@@ -23,8 +23,8 @@ import {IPoolManager} from '@uniswap/v4-core/src/interfaces/IPoolManager.sol';
  */
 contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initializable {
     using CustomRevert for bytes4;
-     using PoolIdLibrary for PoolKey;
-     using CurrencyLibrary for Currency;
+    using PoolIdLibrary for PoolKey;
+    using CurrencyLibrary for Currency;
 
     // ============ Enums ============
 
@@ -105,7 +105,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     mapping(bytes32 => PoolState) public poolStates;
 
     /// @notice Mapping from token address to pool ID
-    mapping(address => bytes32) public tokenPoolIds;
+    mapping(address _memecoin => bytes32 poolId) public tokenPoolIds;
 
     /// @notice Mapping from creator address to pool IDs they created
     mapping(address => bytes32[]) public creatorPools;
@@ -114,7 +114,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     mapping(bytes32 => mapping(bytes32 => bytes)) public strategyData;
 
     /// Maps our IERC20 token addresses to their registered PoolKey
-    mapping (address _memecoin => PoolKey _poolKey) internal _poolKeys;
+    mapping(address _memecoin => PoolKey _poolKey) internal _poolKeys;
 
     /// @notice Default WETH address
     address public immutable weth;
@@ -279,26 +279,22 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
 
         _initializeV4Pool(tokenAddress);
 
-     
-
         // Refund excess ETH
         if (msg.value > poolCreationFee) {
             (bool success,) = payable(msg.sender).call{value: msg.value - poolCreationFee}("");
             require(success, "Refund failed");
         }
 
-
         emit PoolCreated(poolId, tokenAddress, creator, bondingCurveStrategy);
 
         return (poolId, tokenAddress);
     }
 
-    function _initializeV4Pool(address tokenAddress) internal{
-
-          // Check if our pool currency is flipped
+    function _initializeV4Pool(address tokenAddress) internal {
+        // Check if our pool currency is flipped
         bool currencyFlipped = weth >= tokenAddress;
 
-         // Create our Uniswap pool and store the pool key for lookups
+        // Create our Uniswap pool and store the pool key for lookups
         PoolKey memory _poolKey = PoolKey({
             currency0: Currency.wrap(!currencyFlipped ? weth : tokenAddress),
             currency1: Currency.wrap(currencyFlipped ? weth : tokenAddress),
@@ -311,12 +307,10 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
 
         _poolKeys[tokenAddress] = _poolKey;
 
-
         // poolManager.initialize(_poolKey, Constants.SQRT_PRICE_1_1);
 
         ///@notice need to check whether the pool is initialized
-
-    } 
+    }
 
     /**
      * @notice Check if transition conditions are met and update state if they are
@@ -337,6 +331,11 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         }
 
         return conditionsMet;
+    }
+
+    function isPoolTransitioned(bytes32 poolId) public view poolExists(poolId) returns (bool) {
+        PoolState storage state = poolStates[poolId];
+        return state.isTransitioned;
     }
 
     /**
@@ -666,10 +665,9 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @notice Validate transition configuration
      * @param config Transition configuration to validate
      */
-    function _validateTransitionConfig(TransitionConfig memory config) internal view{
+    function _validateTransitionConfig(TransitionConfig memory config) internal view {
         // For percentage-based transition, check if within range
         if (config.transitionType == TransitionType.Percentage) {
-
             /// @notice didn't added check for  transitionData = 0 as this state represent it will not trasnitioned to v4-pools
             if (config.transitionData > 10000) {
                 InvalidTransitionParams.selector.revertWith();
