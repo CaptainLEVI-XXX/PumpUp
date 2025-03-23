@@ -8,14 +8,20 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
 import {BeforeSwapDelta, toBeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
 import {IPoolStateManager} from "./interfaces/IPoolStateManager.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
+import {IBondingCurveStrategy} from "./interfaces/IBondingCurveStrategy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 
 contract PumpUpHook is Initializable, BaseHook {
     using CurrencySettler for Currency;
     using CurrencyLibrary for Currency;
     using CustomRevert for bytes4;
+    using PoolIdLibrary for PoolKey;
 
     error PoolNotTransitioned();
     error PoolTransitioned();
@@ -23,6 +29,8 @@ contract PumpUpHook is Initializable, BaseHook {
     error InsufficientLiquidity();
     error UnexpectedOperation();
     error ZeroAddress();
+    error SwapTooLarge();
+    error InvalidTokenPath();
 
     // Track liquidity provided by each user for each pool
     mapping(address user => mapping(bytes32 poolId => uint256 amount)) public userLiquidity;
@@ -32,6 +40,12 @@ contract PumpUpHook is Initializable, BaseHook {
 
     // Reference to the PoolStateManager contract
     IPoolStateManager private poolStateManager;
+
+    // WETH price oracle contract
+    IPriceOracle private wethPriceOracle;
+
+    // WETH address for reference
+    address public wethAddress;
 
     struct CallbackData {
         uint256 amountEach;
@@ -47,11 +61,29 @@ contract PumpUpHook is Initializable, BaseHook {
         bytes32 poolId;
     }
 
+    // Events
+    event LiquidityAdded(bytes32 indexed poolId, address indexed user, uint256 amount);
+    event LiquidityRemoved(bytes32 indexed poolId, address indexed user, uint256 amount);
+    event TokensPurchased(
+        bytes32 indexed poolId, address indexed user, uint256 wethAmount, uint256 tokenAmount, uint256 newPrice
+    );
+    event TokensSold(
+        bytes32 indexed poolId, address indexed user, uint256 tokenAmount, uint256 wethAmount, uint256 newPrice
+    );
+
     constructor(IPoolManager _manager) BaseHook(_manager) {}
 
-    function initialize(address _poolStateManager) external initializer {
-        if (_poolStateManager == address(0)) ZeroAddress.selector.revertWith();
+    function initialize(address _poolStateManager, address _wethPriceOracle, address _wethAddress)
+        external
+        initializer
+    {
+        if (_poolStateManager == address(0) || _wethPriceOracle == address(0) || _wethAddress == address(0)) {
+            ZeroAddress.selector.revertWith();
+        }
+
         poolStateManager = IPoolStateManager(_poolStateManager);
+        wethPriceOracle = IPriceOracle(_wethPriceOracle);
+        wethAddress = _wethAddress;
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -123,6 +155,7 @@ contract PumpUpHook is Initializable, BaseHook {
             userLiquidity[msg.sender][liquidityParams.poolId] += liquidityParams.amountEach;
             totalPoolLiquidity[liquidityParams.poolId] += liquidityParams.amountEach;
         }
+
         // Call to unlock for token transfers
         poolManager.unlock(
             abi.encode(
@@ -136,6 +169,8 @@ contract PumpUpHook is Initializable, BaseHook {
                 })
             )
         );
+
+        emit LiquidityAdded(liquidityParams.poolId, msg.sender, liquidityParams.amountEach);
     }
 
     /**
@@ -153,7 +188,6 @@ contract PumpUpHook is Initializable, BaseHook {
         if (isTransitioned) PoolTransitioned.selector.revertWith();
 
         // Check if user has enough liquidity
-
         if (userLiquidity[msg.sender][liquidityParams.poolId] < liquidityParams.amountEach) {
             InsufficientLiquidity.selector.revertWith();
         }
@@ -163,6 +197,7 @@ contract PumpUpHook is Initializable, BaseHook {
             userLiquidity[msg.sender][liquidityParams.poolId] -= liquidityParams.amountEach;
             totalPoolLiquidity[liquidityParams.poolId] -= liquidityParams.amountEach;
         }
+
         // Call to unlock for token transfers
         poolManager.unlock(
             abi.encode(
@@ -176,6 +211,8 @@ contract PumpUpHook is Initializable, BaseHook {
                 })
             )
         );
+
+        emit LiquidityRemoved(liquidityParams.poolId, msg.sender, liquidityParams.amountEach);
     }
 
     /**
@@ -192,24 +229,27 @@ contract PumpUpHook is Initializable, BaseHook {
             callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
             callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
 
-            // Update the pool state (reduce circulating supply)
-            // This should affect the bonding curve price
-            (address tokenAddress,,,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
-
             // Get current pool state
-            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
-                poolStateManager.getPoolInfo(callbackData.poolId);
+            (address tokenAddress,,,,, bytes32 bondingCurveStrategy) = poolStateManager.getPoolInfo(callbackData.poolId);
             (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
 
-            // Calculate new values - this is simplified; real implementation would follow bonding curve formula
+            // Calculate new circulating supply
             uint256 newCirculatingSupply = currentCirculatingSupply - callbackData.amountEach;
+
+            // Get the current WETH collected and price
+            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
+                poolStateManager.getPoolInfo(callbackData.poolId);
+
+            // Calculate new price using bonding curve strategy
+            IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(bondingCurveStrategy)));
+            uint256 newPrice = strategy.getCurrentPrice(callbackData.poolId);
 
             // Update pool state in the PoolStateManager
             poolStateManager.updatePoolState(
                 callbackData.poolId,
                 newCirculatingSupply,
                 currentWethCollected, // WETH collected doesn't change for removal
-                currentPrice // Price would actually change based on the curve
+                newPrice
             );
         } else {
             // For adding liquidity:
@@ -221,26 +261,25 @@ contract PumpUpHook is Initializable, BaseHook {
             callbackData.currency0.take(poolManager, address(this), callbackData.amountEach, true);
             callbackData.currency1.take(poolManager, address(this), callbackData.amountEach, true);
 
-            // Update the pool state (increase circulating supply)
-            // This should affect the bonding curve price
-            (address tokenAddress,,,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
-
             // Get current pool state
-            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
-                poolStateManager.getPoolInfo(callbackData.poolId);
+            (address tokenAddress,,,,, bytes32 bondingCurveStrategy) = poolStateManager.getPoolInfo(callbackData.poolId);
             (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
 
-            // Calculate new values - this is simplified; real implementation would follow bonding curve formula
+            // Calculate new circulating supply
             uint256 newCirculatingSupply = currentCirculatingSupply + callbackData.amountEach;
-            uint256 newWethCollected = currentWethCollected + callbackData.amountEach; // Simplified; would depend on price
+
+            // Get the current WETH collected
+            (,, uint256 currentWethCollected,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
+
+            // Add the new WETH contributed
+            uint256 newWethCollected = currentWethCollected + callbackData.amountEach;
+
+            // Calculate new price using bonding curve strategy
+            IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(bondingCurveStrategy)));
+            uint256 newPrice = strategy.getCurrentPrice(callbackData.poolId);
 
             // Update pool state in the PoolStateManager
-            poolStateManager.updatePoolState(
-                callbackData.poolId,
-                newCirculatingSupply,
-                newWethCollected,
-                currentPrice // Price would actually change based on the curve
-            );
+            poolStateManager.updatePoolState(callbackData.poolId, newCirculatingSupply, newWethCollected, newPrice);
         }
 
         return "";
@@ -265,12 +304,13 @@ contract PumpUpHook is Initializable, BaseHook {
             return _handleBondingCurveSwap(key, params, poolId);
         } else {
             // For V4 pool swaps, just return the selector to allow default V4 swap behavior
-            return (this.beforeSwap.selector, BeforeSwapDelta(0, 0), 0);
+            return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
     }
 
     /**
      * @notice Handle swaps against the bonding curve (pre-transition)
+     * @dev Uses the bonding curve strategy to calculate token amounts
      */
     function _handleBondingCurveSwap(PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes32 poolId)
         internal
@@ -279,60 +319,128 @@ contract PumpUpHook is Initializable, BaseHook {
         uint256 amountInOutPositive =
             params.amountSpecified > 0 ? uint256(params.amountSpecified) : uint256(-params.amountSpecified);
 
-        // Get the bonding curve strategy to calculate the correct price
-        (address tokenAddress,, uint256 wethCollected, uint256 currentPrice,, bytes32 strategy) =
-            poolStateManager.getPoolInfo(poolId);
+        // Get the pool info and bonding curve strategy
+        (
+            address tokenAddress,
+            address creator,
+            uint256 wethCollected,
+            uint256 currentPrice,
+            bool isTransitioned,
+            bytes32 strategyId
+        ) = poolStateManager.getPoolInfo(poolId);
 
-        // Calculate the swap outcome based on bonding curve formula
-        // This is a simplified implementation - would need to use the actual bonding curve logic
+        // Get extended pool info
+        (,, uint256 circulatingSupply, uint256 totalSupply,) = poolStateManager.getExtendedPoolInfo(poolId);
+
+        // Cast the strategy ID to an address
+        IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(strategyId)));
+
+        // Initialize variables for swap calculations
         uint256 outputAmount;
         uint256 newCirculatingSupply;
         uint256 newWethCollected;
         uint256 newPrice;
 
-        (,, uint256 circulatingSupply, uint256 totalSupply,) = poolStateManager.getExtendedPoolInfo(poolId);
+        // Get token addresses
+        address token0Address = Currency.unwrap(key.currency0);
+        address token1Address = Currency.unwrap(key.currency1);
 
-        if (params.zeroForOne) {
-            // User is selling token0 (memecoin) and buying token1 (WETH)
-            key.currency0.take(poolManager, address(this), amountInOutPositive, true);
+        // Determine which token is which
+        bool isToken0Memecoin = (token0Address == tokenAddress);
+        bool isToken1WETH = (token1Address == wethAddress);
 
-            // Calculate WETH output based on bonding curve
-            // Simplified calculation - actual would follow curve formula
-            outputAmount = amountInOutPositive * currentPrice / 1e18;
-
-            // Update pool state
-            newCirculatingSupply = circulatingSupply - amountInOutPositive;
-            newWethCollected = wethCollected - outputAmount;
-
-            // Return tokens to user
-            key.currency1.settle(poolManager, msg.sender, outputAmount, true);
-        } else {
-            // User is selling token1 (WETH) and buying token0 (memecoin)
-            key.currency1.take(poolManager, address(this), amountInOutPositive, true);
-
-            // Calculate token output based on bonding curve
-            // Simplified calculation - actual would follow curve formula
-            outputAmount = amountInOutPositive * 1e18 / currentPrice;
-
-            // Update pool state
-            newCirculatingSupply = circulatingSupply + outputAmount;
-            newWethCollected = wethCollected + amountInOutPositive;
-
-            // Return tokens to user
-            key.currency0.settle(poolManager, msg.sender, outputAmount, true);
+        // Verify correct token pairing
+        if (!(isToken0Memecoin && isToken1WETH) && !(token0Address == wethAddress && token1Address == tokenAddress)) {
+            revert InvalidTokenPath();
         }
 
-        // Calculate new price based on bonding curve formula
-        // Simplified calculation - actual would follow curve formula
-        newPrice = newWethCollected * 1e18 / newCirculatingSupply;
+        if (params.zeroForOne) {
+            // User is selling token0 and buying token1
+            key.currency0.take(poolManager, address(this), amountInOutPositive, true);
+
+            if (isToken0Memecoin) {
+                // Selling memecoin for WETH
+                (outputAmount, newPrice) = strategy.calculateSell(poolId, amountInOutPositive);
+
+                // Verify we have enough WETH liquidity
+                if (outputAmount > wethCollected) {
+                    revert InsufficientLiquidity();
+                }
+
+                // Update pool state
+                newCirculatingSupply = circulatingSupply - amountInOutPositive;
+                newWethCollected = wethCollected - outputAmount;
+
+                // Return WETH to user
+                key.currency1.settle(poolManager, msg.sender, outputAmount, true);
+
+                // Emit event
+                emit TokensSold(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
+            } else {
+                // Selling WETH for memecoin
+                (outputAmount, newPrice) = strategy.calculateBuy(poolId, amountInOutPositive);
+
+                // Update pool state
+                newCirculatingSupply = circulatingSupply + outputAmount;
+                newWethCollected = wethCollected + amountInOutPositive;
+
+                // Return memecoin to user
+                key.currency1.settle(poolManager, msg.sender, outputAmount, true);
+
+                // Emit event
+                emit TokensPurchased(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
+            }
+        } else {
+            // User is selling token1 and buying token0
+            key.currency1.take(poolManager, address(this), amountInOutPositive, true);
+
+            if (isToken0Memecoin) {
+                // Selling WETH for memecoin
+                (outputAmount, newPrice) = strategy.calculateBuy(poolId, amountInOutPositive);
+
+                // Update pool state
+                newCirculatingSupply = circulatingSupply + outputAmount;
+                newWethCollected = wethCollected + amountInOutPositive;
+
+                // Return memecoin to user
+                key.currency0.settle(poolManager, msg.sender, outputAmount, true);
+
+                // Emit event
+                emit TokensPurchased(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
+            } else {
+                // Selling memecoin for WETH
+                (outputAmount, newPrice) = strategy.calculateSell(poolId, amountInOutPositive);
+
+                // Verify we have enough WETH liquidity
+                if (outputAmount > wethCollected) {
+                    revert InsufficientLiquidity();
+                }
+
+                // Update pool state
+                newCirculatingSupply = circulatingSupply - amountInOutPositive;
+                newWethCollected = wethCollected - outputAmount;
+
+                // Return WETH to user
+                key.currency0.settle(poolManager, msg.sender, outputAmount, true);
+
+                // Emit event
+                emit TokensSold(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
+            }
+        }
 
         // Update the pool state in the manager
         poolStateManager.updatePoolState(poolId, newCirculatingSupply, newWethCollected, newPrice);
 
-        // Return the appropriate delta
-        BeforeSwapDelta beforeSwapDelta = params.zeroForOne
-            ? BeforeSwapDelta(int128(int256(amountInOutPositive)), -int128(int256(outputAmount)))
-            : BeforeSwapDelta(-int128(int256(outputAmount)), int128(int256(amountInOutPositive)));
+        // Calculate the appropriate delta
+        // BeforeSwapDelta beforeSwapDelta;
+        // if (params.zeroForOne) {
+        //     beforeSwapDelta = toBeforeSwapDelta(int128), -int128(int256(outputAmount)));
+        // } else {
+        //     beforeSwapDelta = toBeforeSwapDelta(-int128(int256(outputAmount)), int128(int256(amountInOutPositive)));
+        // }
+
+        BeforeSwapDelta beforeSwapDelta =
+            toBeforeSwapDelta(int128(-params.amountSpecified), int128(int256(outputAmount)));
 
         return (this.beforeSwap.selector, beforeSwapDelta, 0);
     }
@@ -355,4 +463,14 @@ contract PumpUpHook is Initializable, BaseHook {
     function getPoolLiquidity(bytes32 poolId) external view returns (uint256) {
         return totalPoolLiquidity[poolId];
     }
+
+    /**
+     * @notice Get the current WETH price in USD
+     * @return Current WETH price from oracle
+     */
+    function getCurrentWethPrice() external view returns (uint256) {
+        return wethPriceOracle.getWethPrice();
+    }
+
+
 }
