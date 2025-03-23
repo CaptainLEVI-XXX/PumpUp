@@ -178,166 +178,164 @@ contract PumpUpHook is Initializable, BaseHook {
         );
     }
 
-    // /**
-    //  * @notice Handle token transfers during unlock
-    //  * @param data Callback data
-    //  * @return Empty bytes
-    //  */
-    // function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
-    //     CallbackData memory callbackData = abi.decode(data, (CallbackData));
+    /**
+     * @notice Handle token transfers during unlock
+     * @param data Callback data
+     * @return Empty bytes
+     */
+    function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
+        CallbackData memory callbackData = abi.decode(data, (CallbackData));
 
-    //     if (callbackData.isRemove) {
-    //         // For removing liquidity:
-    //         // Take tokens from hook and settle to the user
-    //         callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
-    //         callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
+        if (callbackData.isRemove) {
+            // For removing liquidity:
+            // Take tokens from hook and settle to the user
+            callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
+            callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
 
-    //         // Update the pool state (reduce circulating supply)
-    //         // This should affect the bonding curve price
-    //         (address tokenAddress, , , , , ) = poolStateManager.getPoolInfo(callbackData.poolId);
+            // Update the pool state (reduce circulating supply)
+            // This should affect the bonding curve price
+            (address tokenAddress,,,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
 
-    //         // Get current pool state
-    //         (, , uint256 currentWethCollected, uint256 currentPrice, , ) = poolStateManager.getPoolInfo(callbackData.poolId);
-    //         (, , uint256 currentCirculatingSupply, , ) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
+            // Get current pool state
+            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
+                poolStateManager.getPoolInfo(callbackData.poolId);
+            (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
 
-    //         // Calculate new values - this is simplified; real implementation would follow bonding curve formula
-    //         uint256 newCirculatingSupply = currentCirculatingSupply - callbackData.amountEach;
+            // Calculate new values - this is simplified; real implementation would follow bonding curve formula
+            uint256 newCirculatingSupply = currentCirculatingSupply - callbackData.amountEach;
 
-    //         // Update pool state in the PoolStateManager
-    //         poolStateManager.updatePoolState(
-    //             callbackData.poolId,
-    //             newCirculatingSupply,
-    //             currentWethCollected, // WETH collected doesn't change for removal
-    //             currentPrice // Price would actually change based on the curve
-    //         );
-    //     } else {
-    //         // For adding liquidity:
-    //         // Take tokens from user
-    //         callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
-    //         callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
+            // Update pool state in the PoolStateManager
+            poolStateManager.updatePoolState(
+                callbackData.poolId,
+                newCirculatingSupply,
+                currentWethCollected, // WETH collected doesn't change for removal
+                currentPrice // Price would actually change based on the curve
+            );
+        } else {
+            // For adding liquidity:
+            // Take tokens from user
+            callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
+            callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
 
-    //         // Move tokens to hook
-    //         callbackData.currency0.take(poolManager, address(this), callbackData.amountEach, true);
-    //         callbackData.currency1.take(poolManager, address(this), callbackData.amountEach, true);
+            // Move tokens to hook
+            callbackData.currency0.take(poolManager, address(this), callbackData.amountEach, true);
+            callbackData.currency1.take(poolManager, address(this), callbackData.amountEach, true);
 
-    //         // Update the pool state (increase circulating supply)
-    //         // This should affect the bonding curve price
-    //         (address tokenAddress, , , , , ) = poolStateManager.getPoolInfo(callbackData.poolId);
+            // Update the pool state (increase circulating supply)
+            // This should affect the bonding curve price
+            (address tokenAddress,,,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
 
-    //         // Get current pool state
-    //         (, , uint256 currentWethCollected, uint256 currentPrice, , ) = poolStateManager.getPoolInfo(callbackData.poolId);
-    //         (, , uint256 currentCirculatingSupply, , ) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
+            // Get current pool state
+            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
+                poolStateManager.getPoolInfo(callbackData.poolId);
+            (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
 
-    //         // Calculate new values - this is simplified; real implementation would follow bonding curve formula
-    //         uint256 newCirculatingSupply = currentCirculatingSupply + callbackData.amountEach;
-    //         uint256 newWethCollected = currentWethCollected + callbackData.amountEach; // Simplified; would depend on price
+            // Calculate new values - this is simplified; real implementation would follow bonding curve formula
+            uint256 newCirculatingSupply = currentCirculatingSupply + callbackData.amountEach;
+            uint256 newWethCollected = currentWethCollected + callbackData.amountEach; // Simplified; would depend on price
 
-    //         // Update pool state in the PoolStateManager
-    //         poolStateManager.updatePoolState(
-    //             callbackData.poolId,
-    //             newCirculatingSupply,
-    //             newWethCollected,
-    //             currentPrice // Price would actually change based on the curve
-    //         );
-    //     }
+            // Update pool state in the PoolStateManager
+            poolStateManager.updatePoolState(
+                callbackData.poolId,
+                newCirculatingSupply,
+                newWethCollected,
+                currentPrice // Price would actually change based on the curve
+            );
+        }
 
-    //     return "";
-    // }
+        return "";
+    }
 
-    // /**
-    //  * @notice Handle swaps for bonding curve or V4 pool
-    //  * @dev For pre-transition (bonding curve) swaps
-    //  */
-    // function _beforeSwap(
-    //     address,
-    //     PoolKey calldata key,
-    //     IPoolManager.SwapParams calldata params,
-    //     bytes calldata data
-    // ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
-    //     bytes32 poolId = abi.decode(data, (bytes32));
+    /**
+     * @notice Handle swaps for bonding curve or V4 pool
+     * @dev For pre-transition (bonding curve) swaps
+     */
+    function _beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata data)
+        internal
+        override
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        bytes32 poolId = abi.decode(data, (bytes32));
 
-    //     // Check if pool has transitioned
-    //     bool isTransitioned = poolStateManager.isPoolTransitioned(poolId);
+        // Check if pool has transitioned
+        bool isTransitioned = poolStateManager.isPoolTransitioned(poolId);
 
-    //     if (!isTransitioned) {
-    //         // For bonding curve swaps
-    //         return _handleBondingCurveSwap(key, params, poolId);
-    //     } else {
-    //         // For V4 pool swaps, just return the selector to allow default V4 swap behavior
-    //         return (this.beforeSwap.selector, BeforeSwapDelta(0, 0), 0);
-    //     }
-    // }
+        if (!isTransitioned) {
+            // For bonding curve swaps
+            return _handleBondingCurveSwap(key, params, poolId);
+        } else {
+            // For V4 pool swaps, just return the selector to allow default V4 swap behavior
+            return (this.beforeSwap.selector, BeforeSwapDelta(0, 0), 0);
+        }
+    }
 
-    // /**
-    //  * @notice Handle swaps against the bonding curve (pre-transition)
-    //  */
-    // function _handleBondingCurveSwap(
-    //     PoolKey calldata key,
-    //     IPoolManager.SwapParams calldata params,
-    //     bytes32 poolId
-    // ) internal returns (bytes4, BeforeSwapDelta, uint24) {
-    //     uint256 amountInOutPositive = params.amountSpecified > 0
-    //         ? uint256(params.amountSpecified)
-    //         : uint256(-params.amountSpecified);
+    /**
+     * @notice Handle swaps against the bonding curve (pre-transition)
+     */
+    function _handleBondingCurveSwap(PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes32 poolId)
+        internal
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        uint256 amountInOutPositive =
+            params.amountSpecified > 0 ? uint256(params.amountSpecified) : uint256(-params.amountSpecified);
 
-    //     // Get the bonding curve strategy to calculate the correct price
-    //     (address tokenAddress, , uint256 wethCollected, uint256 currentPrice, , bytes32 strategy) =
-    //         poolStateManager.getPoolInfo(poolId);
+        // Get the bonding curve strategy to calculate the correct price
+        (address tokenAddress,, uint256 wethCollected, uint256 currentPrice,, bytes32 strategy) =
+            poolStateManager.getPoolInfo(poolId);
 
-    //     // Calculate the swap outcome based on bonding curve formula
-    //     // This is a simplified implementation - would need to use the actual bonding curve logic
-    //     uint256 outputAmount;
-    //     uint256 newCirculatingSupply;
-    //     uint256 newWethCollected;
-    //     uint256 newPrice;
+        // Calculate the swap outcome based on bonding curve formula
+        // This is a simplified implementation - would need to use the actual bonding curve logic
+        uint256 outputAmount;
+        uint256 newCirculatingSupply;
+        uint256 newWethCollected;
+        uint256 newPrice;
 
-    //     (, , uint256 circulatingSupply, uint256 totalSupply, ) =
-    //         poolStateManager.getExtendedPoolInfo(poolId);
+        (,, uint256 circulatingSupply, uint256 totalSupply,) = poolStateManager.getExtendedPoolInfo(poolId);
 
-    //     if (params.zeroForOne) {
-    //         // User is selling token0 (memecoin) and buying token1 (WETH)
-    //         key.currency0.take(poolManager, address(this), amountInOutPositive, true);
+        if (params.zeroForOne) {
+            // User is selling token0 (memecoin) and buying token1 (WETH)
+            key.currency0.take(poolManager, address(this), amountInOutPositive, true);
 
-    //         // Calculate WETH output based on bonding curve
-    //         // Simplified calculation - actual would follow curve formula
-    //         outputAmount = amountInOutPositive * currentPrice / 1e18;
+            // Calculate WETH output based on bonding curve
+            // Simplified calculation - actual would follow curve formula
+            outputAmount = amountInOutPositive * currentPrice / 1e18;
 
-    //         // Update pool state
-    //         newCirculatingSupply = circulatingSupply - amountInOutPositive;
-    //         newWethCollected = wethCollected - outputAmount;
+            // Update pool state
+            newCirculatingSupply = circulatingSupply - amountInOutPositive;
+            newWethCollected = wethCollected - outputAmount;
 
-    //         // Return tokens to user
-    //         key.currency1.settle(poolManager, msg.sender, outputAmount, true);
-    //     } else {
-    //         // User is selling token1 (WETH) and buying token0 (memecoin)
-    //         key.currency1.take(poolManager, address(this), amountInOutPositive, true);
+            // Return tokens to user
+            key.currency1.settle(poolManager, msg.sender, outputAmount, true);
+        } else {
+            // User is selling token1 (WETH) and buying token0 (memecoin)
+            key.currency1.take(poolManager, address(this), amountInOutPositive, true);
 
-    //         // Calculate token output based on bonding curve
-    //         // Simplified calculation - actual would follow curve formula
-    //         outputAmount = amountInOutPositive * 1e18 / currentPrice;
+            // Calculate token output based on bonding curve
+            // Simplified calculation - actual would follow curve formula
+            outputAmount = amountInOutPositive * 1e18 / currentPrice;
 
-    //         // Update pool state
-    //         newCirculatingSupply = circulatingSupply + outputAmount;
-    //         newWethCollected = wethCollected + amountInOutPositive;
+            // Update pool state
+            newCirculatingSupply = circulatingSupply + outputAmount;
+            newWethCollected = wethCollected + amountInOutPositive;
 
-    //         // Return tokens to user
-    //         key.currency0.settle(poolManager, msg.sender, outputAmount, true);
-    //     }
+            // Return tokens to user
+            key.currency0.settle(poolManager, msg.sender, outputAmount, true);
+        }
 
-    //     // Calculate new price based on bonding curve formula
-    //     // Simplified calculation - actual would follow curve formula
-    //     newPrice = newWethCollected * 1e18 / newCirculatingSupply;
+        // Calculate new price based on bonding curve formula
+        // Simplified calculation - actual would follow curve formula
+        newPrice = newWethCollected * 1e18 / newCirculatingSupply;
 
-    //     // Update the pool state in the manager
-    //     poolStateManager.updatePoolState(poolId, newCirculatingSupply, newWethCollected, newPrice);
+        // Update the pool state in the manager
+        poolStateManager.updatePoolState(poolId, newCirculatingSupply, newWethCollected, newPrice);
 
-    //     // Return the appropriate delta
-    //     BeforeSwapDelta beforeSwapDelta = params.zeroForOne
-    //         ? BeforeSwapDelta(int128(int256(amountInOutPositive)), -int128(int256(outputAmount)))
-    //         : BeforeSwapDelta(-int128(int256(outputAmount)), int128(int256(amountInOutPositive)));
+        // Return the appropriate delta
+        BeforeSwapDelta beforeSwapDelta = params.zeroForOne
+            ? BeforeSwapDelta(int128(int256(amountInOutPositive)), -int128(int256(outputAmount)))
+            : BeforeSwapDelta(-int128(int256(outputAmount)), int128(int256(amountInOutPositive)));
 
-    //     return (this.beforeSwap.selector, beforeSwapDelta, 0);
-    // }
+        return (this.beforeSwap.selector, beforeSwapDelta, 0);
+    }
 
     /**
      * @notice Get the liquidity balance of a user in a specific pool
