@@ -5,14 +5,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {SuperAdmin2Step} from "../helpers/SuperAdmin2Step.sol";
 import {UD60x18, ud} from "@prb/math/src/UD60x18.sol";
-import {exp, intoUint256} from "@prb/math/src/UD60x18.sol";
+import {exp, ln, intoUint256} from "@prb/math/src/UD60x18.sol";
 
 import {IPoolStateManager} from "../interfaces/IPoolStateManager.sol";
 import {IBondingCurveStrategy} from "../interfaces/IBondingCurveStrategy.sol";
 
 /**
  * @title ExponentialBondingCurve
- * @notice Implements an exponential bonding curve for token trading (Pump.fun-like)
+ * @notice Implements an exponential bonding curve for token trading with exact output support
  * @dev Optimized to compile without --via-ir flag
  */
 contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
@@ -24,7 +24,6 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         UD60x18 initialPrice; // Coefficient 'a' in the formula a * e^(b * y)
         UD60x18 steepness; // Coefficient 'b' in the formula
         uint256 totalSupply; // Total token supply for reference
-            // Removed unused parameters to save gas and reduce stack depth
     }
 
     // ============ Constants ============
@@ -49,6 +48,8 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
     event StrategyInitialized(bytes32 indexed poolId, uint256 initialPrice, uint256 steepness, uint256 totalSupply);
     event TokensPurchased(bytes32 indexed poolId, uint256 wethAmount, uint256 tokenAmount, uint256 newPrice);
     event TokensSold(bytes32 indexed poolId, uint256 tokenAmount, uint256 wethAmount, uint256 newPrice);
+    event ExactTokensCalculated(bytes32 indexed poolId, uint256 wethAmount, uint256 tokenAmount);
+    event ExactWethCalculated(bytes32 indexed poolId, uint256 tokenAmount, uint256 wethAmount);
 
     // ============ Errors ============
 
@@ -58,6 +59,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
     error NotPoolStateManager();
     error InsufficientLiquidity();
     error PoolTransitioned();
+    error CalculationFailed();
 
     // ============ Constructor ============
 
@@ -243,6 +245,180 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
 
         emit TokensSold(poolId, tokenAmount, wethAmount, newPrice);
         return (wethAmount, newPrice);
+    }
+
+    /**
+     * @notice NEW FUNCTION: Calculate WETH needed for exact token output
+     * @param poolId The ID of the pool
+     * @param exactTokenAmount Exact amount of tokens the user wants to receive
+     * @return wethAmount Amount of WETH needed to spend
+     * @return newPrice New token price after the purchase
+     */
+    function calculateWethForExactTokens(bytes32 poolId, uint256 exactTokenAmount)
+        external
+        returns (uint256 wethAmount, uint256 newPrice)
+    {
+        // Check inputs first
+        if (exactTokenAmount == 0) revert InvalidAmount();
+
+        // Get pool info and check pool status
+        address tokenAddress;
+        bool isTransitioned;
+        {
+            // Limit variable scope to reduce stack depth
+            (
+                tokenAddress,
+                , // creator not used
+                , // wethCollected not used
+                , // lastPrice not used
+                isTransitioned,
+                // bondingCurveStrategy not used
+            ) = poolStateManager.getPoolInfo(poolId);
+
+            if (isTransitioned) revert PoolTransitioned();
+        }
+
+        // Get curve parameters
+        CurveParameters memory params = curveParams[poolId];
+        if (params.totalSupply == 0) revert InvalidPoolId();
+
+        // Calculate circulating supply
+        UD60x18 circulatingSupply;
+        {
+            uint256 heldByManager = IERC20(tokenAddress).balanceOf(address(poolStateManager));
+            uint256 totalTokenSupply = IERC20(tokenAddress).totalSupply();
+            circulatingSupply = ud(totalTokenSupply - heldByManager);
+        }
+
+        // Check if requested token amount is available
+        UD60x18 maxAvailable = ud(params.totalSupply).sub(circulatingSupply);
+        if (ud(exactTokenAmount).gt(maxAvailable)) revert InvalidAmount();
+
+        // Calculate WETH needed using integral of price function
+        UD60x18 totalSupplyUD = ud(params.totalSupply);
+
+        // Calculate start and end percentages
+        UD60x18 startPercentage = circulatingSupply.div(totalSupplyUD);
+        UD60x18 endPercentage = circulatingSupply.add(ud(exactTokenAmount)).div(totalSupplyUD);
+
+        // Calculate exp values
+        UD60x18 expStart = exp(params.steepness.mul(startPercentage));
+        UD60x18 expEnd = exp(params.steepness.mul(endPercentage));
+
+        // Calculate area under the curve: (a/b) * (expEnd - expStart) * totalSupply * (exactTokenAmount/totalSupply)
+        // This is the definite integral of the price function from startPercentage to endPercentage
+        UD60x18 wethNeeded = params.initialPrice.div(params.steepness).mul(expEnd.sub(expStart)).mul(
+            ud(exactTokenAmount)
+        ).div(ud(params.totalSupply));
+
+        wethAmount = intoUint256(wethNeeded);
+
+        // Calculate new price after purchase
+        newPrice = intoUint256(_calculatePrice(circulatingSupply.add(ud(exactTokenAmount)), params));
+
+        emit ExactTokensCalculated(poolId, wethAmount, exactTokenAmount);
+        return (wethAmount, newPrice);
+    }
+
+    /**
+     * @notice NEW FUNCTION: Calculate tokens needed for exact WETH output
+     * @param poolId The ID of the pool
+     * @param exactWethAmount Exact amount of WETH the user wants to receive
+     * @return tokenAmount Amount of tokens needed to sell
+     * @return newPrice New token price after the sale
+     */
+    function calculateTokensForExactWeth(bytes32 poolId, uint256 exactWethAmount)
+        external
+        returns (uint256 tokenAmount, uint256 newPrice)
+    {
+        // Check inputs first
+        if (exactWethAmount == 0) revert InvalidAmount();
+
+        // Get pool info and validate
+        address tokenAddress;
+        uint256 wethCollected;
+        bool isTransitioned;
+        {
+            // Limit variable scope to reduce stack depth
+            (
+                tokenAddress,
+                , // creator not used
+                wethCollected,
+                , // lastPrice not used
+                isTransitioned,
+                // bondingCurveStrategy not used
+            ) = poolStateManager.getPoolInfo(poolId);
+
+            if (isTransitioned) revert PoolTransitioned();
+        }
+
+        // Verify we have enough WETH liquidity
+        if (exactWethAmount > wethCollected) revert InsufficientLiquidity();
+
+        // Get curve parameters
+        CurveParameters memory params = curveParams[poolId];
+        if (params.totalSupply == 0) revert InvalidPoolId();
+
+        // Calculate circulating supply
+        UD60x18 circulatingSupply;
+        {
+            uint256 heldByManager = IERC20(tokenAddress).balanceOf(address(poolStateManager));
+            uint256 totalTokenSupply = IERC20(tokenAddress).totalSupply();
+            circulatingSupply = ud(totalTokenSupply - heldByManager);
+        }
+
+        // We need to solve the inverse problem:
+        // Given exactWethAmount, solve for tokenAmount where:
+        // exactWethAmount = _calculateSellWeth(circulatingSupply, tokenAmount, params)
+
+        // We'll use a binary search to find the answer since we can't directly solve this equation
+        UD60x18 minTokens = ud(0);
+        UD60x18 maxTokens = circulatingSupply; // Can't sell more than circulating supply
+        UD60x18 targetWeth = ud(exactWethAmount);
+        UD60x18 tokensToSell;
+
+        // Use binary search with 8 iterations for precision
+        for (uint8 i = 0; i < 8; i++) {
+            // Calculate midpoint
+            tokensToSell = minTokens.add(maxTokens.sub(minTokens).div(ud(2)));
+
+            // Skip if too small
+            if (intoUint256(tokensToSell) == 0) break;
+
+            // Calculate WETH output for this amount of tokens
+            UD60x18 wethOutput = _calculateSellWeth(circulatingSupply, tokensToSell, params);
+
+            // If we're within 0.1% of the target, this is good enough
+            if (
+                wethOutput.mul(ud(999)).div(ud(1000)).lte(targetWeth)
+                    && wethOutput.mul(ud(1001)).div(ud(1000)).gte(targetWeth)
+            ) {
+                break;
+            }
+
+            // Adjust our search range
+            if (wethOutput.lt(targetWeth)) {
+                // Need to sell more tokens
+                minTokens = tokensToSell;
+            } else {
+                // Need to sell fewer tokens
+                maxTokens = tokensToSell;
+            }
+        }
+
+        tokenAmount = intoUint256(tokensToSell);
+
+        // Check if tokenAmount is valid
+        if (tokenAmount == 0 || tokenAmount > intoUint256(circulatingSupply)) {
+            revert CalculationFailed();
+        }
+
+        // Calculate new price after sale
+        UD60x18 newCirculatingSupply = circulatingSupply.sub(ud(tokenAmount));
+        newPrice = intoUint256(_calculatePrice(newCirculatingSupply, params));
+
+        emit ExactWethCalculated(poolId, tokenAmount, exactWethAmount);
+        return (tokenAmount, newPrice);
     }
 
     /**
