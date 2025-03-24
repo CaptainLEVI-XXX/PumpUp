@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {SuperAdmin2Step} from "./helpers/SuperAdmin2Step.sol";
 import {ReentrancyGuardTransient} from "@solady/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {INft} from "./interfaces/INft.sol";
+import {IPumpUp} from "./interfaces/IPumpUp.sol";
 import {IMemeCoin} from "./interfaces/IMemeCoin.sol";
 import {IStrategyManager} from "./interfaces/IStrategyManager.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
@@ -120,7 +120,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     address public immutable weth;
 
     /// @notice NFT contract for token ownership
-    INft public nftContract;
+    IPumpUp public nftContract;
 
     /// @notice Strategy manager contract
     IStrategyManager public strategyManager;
@@ -200,7 +200,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
             InvalidAddress.selector.revertWith();
         }
 
-        nftContract = INft(_nftContract);
+        nftContract = IPumpUp(_nftContract);
         strategyManager = IStrategyManager(_strategyManager);
         hookContract = _hookContract;
         avsContract = _avsContract;
@@ -582,7 +582,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         address _avsContract
     ) external onlySuperAdmin {
         if (_nftContract != address(0)) {
-            nftContract = INft(_nftContract);
+            nftContract = IPumpUp(_nftContract);
         }
 
         if (_strategyManager != address(0)) {

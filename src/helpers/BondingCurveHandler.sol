@@ -35,13 +35,12 @@ abstract contract BondingCurveSwap is BaseHook {
         bytes32 indexed poolId, address indexed user, uint256 tokenAmount, uint256 wethAmount, uint256 newPrice
     );
 
-    IPoolStateManager public  poolStateManager;
+    IPoolStateManager public poolStateManager;
     address public wethAddress;
 
     //need to put correct authentication
 
     function initializeBondingCurveSwap(IPoolStateManager _poolStateManager, address _wethAddress) internal {
-    
         poolStateManager = _poolStateManager;
         wethAddress = _wethAddress;
     }

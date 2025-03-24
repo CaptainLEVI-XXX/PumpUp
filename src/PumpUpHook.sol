@@ -18,7 +18,7 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BondingCurveSwap} from "./helpers/BondingCurveHandler.sol";
 
-contract PumpUpHook is Initializable, BaseHook ,BondingCurveSwap{
+contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
     using CurrencySettler for Currency;
     using CurrencyLibrary for Currency;
     using CustomRevert for bytes4;
@@ -31,17 +31,14 @@ contract PumpUpHook is Initializable, BaseHook ,BondingCurveSwap{
     error UnexpectedOperation();
     error ZeroAddress();
 
-
     // Track liquidity provided by each user for each pool
     mapping(address user => mapping(bytes32 poolId => uint256 amount)) public userLiquidity;
 
     // Track total liquidity for each pool
     mapping(bytes32 poolId => uint256 liquidity) public totalPoolLiquidity;
 
-
     // WETH price oracle contract
     IPriceOracle private wethPriceOracle;
-
 
     struct CallbackData {
         uint256 amountEach;
@@ -71,7 +68,7 @@ contract PumpUpHook is Initializable, BaseHook ,BondingCurveSwap{
             ZeroAddress.selector.revertWith();
         }
         wethPriceOracle = IPriceOracle(_wethPriceOracle);
-        initializeBondingCurveSwap(poolStateManager,wethAddress);
+        initializeBondingCurveSwap(poolStateManager, wethAddress);
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -289,154 +286,13 @@ contract PumpUpHook is Initializable, BaseHook ,BondingCurveSwap{
 
         if (!isTransitioned) {
             // For bonding curve swaps
-            BeforeSwapDelta beoforeSwapDelta = handleBondingCurveSwap(key, params, poolId,msg.sender);
+            BeforeSwapDelta beoforeSwapDelta = handleBondingCurveSwap(key, params, poolId, msg.sender);
             return (this.beforeSwap.selector, beoforeSwapDelta, 0);
         } else {
             // For V4 pool swaps, just return the selector to allow default V4 swap behavior
             return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
     }
-
-    // /**
-    //  * @notice Handle swaps against the bonding curve (pre-transition)
-    //  * @dev Uses the bonding curve strategy to calculate token amounts
-    //  */
-    // function _handleBondingCurveSwap(PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes32 poolId)
-    //     internal
-    //     returns (bytes4, BeforeSwapDelta, uint24)
-    // {
-    //     uint256 amountInOutPositive =
-    //         params.amountSpecified > 0 ? uint256(params.amountSpecified) : uint256(-params.amountSpecified);
-
-    //     // Get the pool info and bonding curve strategy
-    //     (
-    //         address tokenAddress,
-    //         address creator,
-    //         uint256 wethCollected,
-    //         uint256 currentPrice,
-    //         bool isTransitioned,
-    //         bytes32 strategyId
-    //     ) = poolStateManager.getPoolInfo(poolId);
-
-    //     // Get extended pool info
-    //     (,, uint256 circulatingSupply, uint256 totalSupply,) = poolStateManager.getExtendedPoolInfo(poolId);
-
-    //     // Cast the strategy ID to an address
-    //     IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(strategyId)));
-
-    //     // Initialize variables for swap calculations
-    //     uint256 outputAmount;
-    //     uint256 newCirculatingSupply;
-    //     uint256 newWethCollected;
-    //     uint256 newPrice;
-
-    //     // Get token addresses
-    //     address token0Address = Currency.unwrap(key.currency0);
-    //     address token1Address = Currency.unwrap(key.currency1);
-
-    //     // Determine which token is which
-    //     bool isToken0Memecoin = (token0Address == tokenAddress);
-    //     bool isToken1WETH = (token1Address == wethAddress);
-
-    //     // Verify correct token pairing
-    //     if (!(isToken0Memecoin && isToken1WETH) && !(token0Address == wethAddress && token1Address == tokenAddress)) {
-    //         revert InvalidTokenPath();
-    //     }
-
-    //     if (params.zeroForOne) {
-    //         //this means the swap direction is from user-->token1,,, user<---token0
-    //     }
-
-    //     if (params.zeroForOne) {
-    //         // User is selling token0 and buying token1
-    //         key.currency0.take(poolManager, address(this), amountInOutPositive, true);
-
-    //         if (isToken0Memecoin) {
-    //             // Selling memecoin for WETH
-    //             (outputAmount, newPrice) = strategy.calculateSell(poolId, amountInOutPositive);
-
-    //             // Verify we have enough WETH liquidity
-    //             if (outputAmount > wethCollected) {
-    //                 revert InsufficientLiquidity();
-    //             }
-
-    //             // Update pool state
-    //             newCirculatingSupply = circulatingSupply - amountInOutPositive;
-    //             newWethCollected = wethCollected - outputAmount;
-
-    //             // Return WETH to user
-    //             key.currency1.settle(poolManager, msg.sender, outputAmount, true);
-
-    //             // Emit event
-    //             emit TokensSold(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
-    //         } else {
-    //             // Selling WETH for memecoin
-    //             (outputAmount, newPrice) = strategy.calculateBuy(poolId, amountInOutPositive);
-
-    //             // Update pool state
-    //             newCirculatingSupply = circulatingSupply + outputAmount;
-    //             newWethCollected = wethCollected + amountInOutPositive;
-
-    //             // Return memecoin to user
-    //             key.currency1.settle(poolManager, msg.sender, outputAmount, true);
-
-    //             // Emit event
-    //             emit TokensPurchased(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
-    //         }
-    //     } else {
-    //         // User is selling token1 and buying token0
-    //         key.currency1.take(poolManager, address(this), amountInOutPositive, true);
-
-    //         if (isToken0Memecoin) {
-    //             // Selling WETH for memecoin
-    //             (outputAmount, newPrice) = strategy.calculateBuy(poolId, amountInOutPositive);
-
-    //             // Update pool state
-    //             newCirculatingSupply = circulatingSupply + outputAmount;
-    //             newWethCollected = wethCollected + amountInOutPositive;
-
-    //             // Return memecoin to user
-    //             key.currency0.settle(poolManager, msg.sender, outputAmount, true);
-
-    //             // Emit event
-    //             emit TokensPurchased(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
-    //         } else {
-    //             // Selling memecoin for WETH
-    //             (outputAmount, newPrice) = strategy.calculateSell(poolId, amountInOutPositive);
-
-    //             // Verify we have enough WETH liquidity
-    //             if (outputAmount > wethCollected) {
-    //                 revert InsufficientLiquidity();
-    //             }
-
-    //             // Update pool state
-    //             newCirculatingSupply = circulatingSupply - amountInOutPositive;
-    //             newWethCollected = wethCollected - outputAmount;
-
-    //             // Return WETH to user
-    //             key.currency0.settle(poolManager, msg.sender, outputAmount, true);
-
-    //             // Emit event
-    //             emit TokensSold(poolId, msg.sender, amountInOutPositive, outputAmount, newPrice);
-    //         }
-    //     }
-
-    //     // Update the pool state in the manager
-    //     poolStateManager.updatePoolState(poolId, newCirculatingSupply, newWethCollected, newPrice);
-
-    //     // Calculate the appropriate delta
-    //     // BeforeSwapDelta beforeSwapDelta;
-    //     // if (params.zeroForOne) {
-    //     //     beforeSwapDelta = toBeforeSwapDelta(int128), -int128(int256(outputAmount)));
-    //     // } else {
-    //     //     beforeSwapDelta = toBeforeSwapDelta(-int128(int256(outputAmount)), int128(int256(amountInOutPositive)));
-    //     // }
-
-    //     BeforeSwapDelta beforeSwapDelta =
-    //         toBeforeSwapDelta(int128(-params.amountSpecified), int128(int256(outputAmount)));
-
-    //     return (this.beforeSwap.selector, beforeSwapDelta, 0);
-    // }
 
     /**
      * @notice Get the liquidity balance of a user in a specific pool

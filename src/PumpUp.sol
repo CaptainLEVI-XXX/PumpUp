@@ -9,7 +9,7 @@ import {ERC721} from "@solady/tokens/ERC721.sol";
 import {Initializable} from "@solady/utils/Initializable.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
-contract Nft is Initializable, ERC721, SuperAdmin2Step {
+contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
     using CustomRevert for bytes4;
 
     string internal name_ = "Capstone Project Nft";
