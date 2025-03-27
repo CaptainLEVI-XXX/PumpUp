@@ -6,10 +6,8 @@ import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {SuperAdmin2Step} from "../helpers/SuperAdmin2Step.sol";
 import {UD60x18, ud} from "@prb/math/src/UD60x18.sol";
 import {exp, ln, intoUint256} from "@prb/math/src/UD60x18.sol";
-
 import {IPoolStateManager} from "../interfaces/IPoolStateManager.sol";
 import {IBondingCurveStrategy} from "../interfaces/IBondingCurveStrategy.sol";
-import {console} from "forge-std/console.sol";
 
 /**
  * @title ImprovedExponentialBondingCurve
@@ -99,9 +97,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
      */
     function initialize(bytes32 poolId, bytes calldata params) external override {
         // Only the pool state manager can initialize
-        if (msg.sender != address(poolStateManager)) {
-            revert NotPoolStateManager();
-        }
+        if (msg.sender != address(poolStateManager)) NotPoolStateManager.selector.revertWith();
 
         // Decode parameters
         (
@@ -114,7 +110,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
 
         // Validate parameters
         if (initialWethDeposit == 0 || initialTokenAmount == 0 || totalSupply == 0) {
-            revert InvalidParameters();
+            InvalidParameters.selector.revertWith();
         }
 
         // Calculate initial price 'a' based on WETH deposit and initial tokens
@@ -154,16 +150,10 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         returns (uint256 tokenAmount, uint256 newPrice)
     {
         // Check inputs first
-        if (wethAmount == 0) revert InvalidAmount();
+        if (wethAmount == 0) InvalidAmount.selector.revertWith();
 
         // Get pool info
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (,, uint256 currentCirculatingSupply,,) = poolStateManager.getInfoForHook(poolId);
 
         // Get curve parameters
         CurveParameters memory params = curveParams[poolId];
@@ -231,33 +221,27 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         returns (uint256 wethAmount, uint256 newPrice)
     {
         // Check inputs first
-        if (tokenAmount == 0) revert InvalidAmount();
-        if (tokenAmount < MIN_TOKEN_PURCHASE) revert AmountTooSmall();
+        if (tokenAmount == 0) InvalidAmount.selector.revertWith();
+        if (tokenAmount < MIN_TOKEN_PURCHASE) AmountTooSmall.selector.revertWith();
 
         // Get pool info and validate
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (,, uint256 currentCirculatingSupply, uint256 currentWethCollected,) = poolStateManager.getInfoForHook(poolId);
 
         // Get curve parameters
         CurveParameters memory params = curveParams[poolId];
-        if (params.totalSupply == 0) revert InvalidPoolId();
+        if (params.totalSupply == 0) InvalidPoolId.selector.revertWith();
 
         // Calculate circulating supply
         UD60x18 circulatingSupply = ud(currentCirculatingSupply);
 
         // Check if selling more than available
-        if (tokenAmount > intoUint256(circulatingSupply)) revert InvalidAmount();
+        if (tokenAmount > intoUint256(circulatingSupply)) InvalidAmount.selector.revertWith();
 
         // Calculate WETH to return using integral method
         UD60x18 wethToReturn = _calculateSellWethIntegral(circulatingSupply, ud(tokenAmount), params);
 
         // Check against available liquidity
-        if (intoUint256(wethToReturn) > currentWethCollected) revert InsufficientLiquidity();
+        if (intoUint256(wethToReturn) > currentWethCollected) InsufficientLiquidity.selector.revertWith();
 
         // Calculate new price after sale
         UD60x18 newCirculatingSupply = circulatingSupply.sub(ud(tokenAmount));
@@ -289,13 +273,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         if (exactTokenAmount < MIN_TOKEN_PURCHASE) revert AmountTooSmall();
 
         // Get pool info
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (,, uint256 currentCirculatingSupply,,) = poolStateManager.getInfoForHook(poolId);
 
         // Get curve parameters
         CurveParameters memory params = curveParams[poolId];
@@ -350,23 +328,17 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         returns (uint256 tokenAmount, uint256 newPrice)
     {
         // Check inputs first
-        if (exactWethAmount == 0) revert InvalidAmount();
+        if (exactWethAmount == 0) InvalidAmount.selector.revertWith();
 
         // Get pool info and validate
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (,, uint256 currentCirculatingSupply, uint256 currentWethCollected,) = poolStateManager.getInfoForHook(poolId);
 
         // Verify we have enough WETH liquidity
-        if (exactWethAmount > currentWethCollected) revert InsufficientLiquidity();
+        if (exactWethAmount > currentWethCollected) InsufficientLiquidity.selector.revertWith();
 
         // Get curve parameters
         CurveParameters memory params = curveParams[poolId];
-        if (params.totalSupply == 0) revert InvalidPoolId();
+        if (params.totalSupply == 0) InvalidPoolId.selector.revertWith();
 
         // Calculate circulating supply
         UD60x18 circulatingSupply = ud(currentCirculatingSupply);
@@ -379,7 +351,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         UD60x18 wethOutput = ud(0);
 
         // Use binary search with more iterations for better precision
-        for (uint8 i = 0; i < 16; i++) {
+        for (uint8 i = 0; i < 5; i++) {
             // Calculate midpoint
             tokensToSell = minTokens.add(maxTokens.sub(minTokens).div(ud(2)));
 
@@ -441,16 +413,10 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
      * @return Current price of the token
      */
     function getCurrentPrice(bytes32 poolId) external view override returns (uint256) {
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (,, uint256 currentCirculatingSupply,,) = poolStateManager.getInfoForHook(poolId);
 
         CurveParameters memory params = curveParams[poolId];
-        if (params.totalSupply == 0) revert InvalidPoolId();
+        if (params.totalSupply == 0) InvalidPoolId.selector.revertWith();
 
         // Calculate price based on current circulating supply
         UD60x18 circulatingSupply = ud(currentCirculatingSupply);

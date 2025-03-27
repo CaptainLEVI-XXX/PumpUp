@@ -165,7 +165,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      */
     modifier onlyAuthorized() {
         if (!authorizedAddresses[msg.sender] && msg.sender != superAdmin()) {
-            revert NotAuthorized();
+            NotAuthorized.selector.revertWith();
         }
         _;
     }
@@ -175,7 +175,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      */
     modifier poolExists(bytes32 poolId) {
         if (!poolStates[poolId].isInitialized) {
-            revert PoolNotFound();
+            PoolNotFound.selector.revertWith();
         }
         _;
     }

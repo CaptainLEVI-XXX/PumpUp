@@ -10,12 +10,11 @@ import {IPoolStateManager} from "../interfaces/IPoolStateManager.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
-import {console} from "forge-std/console.sol";
 import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
 
 /**
  * @title BondingCurveSwap
- * @notice contract that handles swaps against bonding curves
+ * @notice Contract that handles swaps against bonding curves
  * @dev Supports both exact input and exact output swaps
  */
 abstract contract BondingCurveSwap is BaseHook {
@@ -29,13 +28,6 @@ abstract contract BondingCurveSwap is BaseHook {
     error SwapTooLarge();
     error ExactOutputNotSupported();
 
-    struct TransitParams{
-        Currency currency0;
-        Currency currency1;
-        uint256 amount0;
-        uint256 amount1;
-    }
-
     // Events
     event TokensPurchased(
         bytes32 indexed poolId, address indexed user, uint256 wethAmount, uint256 tokenAmount, uint256 newPrice
@@ -44,10 +36,34 @@ abstract contract BondingCurveSwap is BaseHook {
         bytes32 indexed poolId, address indexed user, uint256 tokenAmount, uint256 wethAmount, uint256 newPrice
     );
 
+    // Structs to avoid stack too deep errors
+    struct SwapInfo {
+        bool isToken0Memecoin;
+        bool isExactInput;
+        bool isBuyingMemecoin;
+        Currency inputCurrency;
+        Currency outputCurrency;
+        uint256 amountSpecifiedPositive;
+    }
+
+    struct SwapResult {
+        uint256 inputAmount;
+        uint256 outputAmount;
+        uint256 newPrice;
+        uint256 newCirculatingSupply;
+        uint256 newWethCollected;
+    }
+
+    struct PoolInfo {
+        address tokenAddress;
+        address strategyAddress;
+        uint256 circulatingSupply;
+        uint256 wethCollected;
+        uint256 currentPrice;
+    }
+
     IPoolStateManager public poolStateManager;
     address public wethAddress;
-
-    //need to put correct authentication
 
     function initializeBondingCurveSwap(IPoolStateManager _poolStateManager, address _wethAddress) internal {
         poolStateManager = _poolStateManager;
@@ -55,8 +71,7 @@ abstract contract BondingCurveSwap is BaseHook {
     }
 
     /**
-     * @notice Handle swaps against the bonding curve (pre-transition)
-     * @dev Optimized implementation with corrected supply calculations
+     * @notice Main entry point for handling bonding curve swaps
      */
     function handleBondingCurveSwap(
         PoolKey calldata key,
@@ -64,170 +79,221 @@ abstract contract BondingCurveSwap is BaseHook {
         bytes32 poolId,
         address sender
     ) internal returns (BeforeSwapDelta) {
-        // Get the pool info and bonding curve strategy
-        (
-            address tokenAddress,
-            address bondingCurveImplementation,
-            uint256 circulatingSupply,
-            uint256 wethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
-
-        // Cast the strategy ID to an address
-        IBondingCurveStrategy strategy = IBondingCurveStrategy(bondingCurveImplementation);
-
-        // Validate and determine token arrangement
-        address token0Address = Currency.unwrap(key.currency0);
-        address token1Address = Currency.unwrap(key.currency1);
-        bool isToken0Memecoin = (token0Address == tokenAddress);
-
-        // Verify correct token pairing
-        if (
-            !(isToken0Memecoin && token1Address == wethAddress)
-                && !(token0Address == wethAddress && token1Address == tokenAddress)
-        ) {
-            revert InvalidTokenPath();
-        }
-
-        // Determine swap type and currencies
-        bool isExactInput = params.amountSpecified < 0;
-        bool isBuyingMemecoin =
-            isExactInput ? (params.zeroForOne != isToken0Memecoin) : (params.zeroForOne == isToken0Memecoin);
-
-        Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
-        Currency outputCurrency = params.zeroForOne ? key.currency1 : key.currency0;
-
-        // Convert specified amount to positive for calculations
-        uint256 amountSpecifiedPositive =
-            isExactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-
-        // Variables for swap calculations
-        uint256 inputAmount;
-        uint256 outputAmount;
-        uint256 newPrice;
-        uint256 newCirculatingSupply;
-        uint256 newWethCollected;
-
-        if (isExactInput) {
-            // EXACT INPUT
-            inputAmount = amountSpecifiedPositive;
-
-            if (isBuyingMemecoin) {
-                // Buying memecoin with WETH
-                (outputAmount, newPrice) = strategy.calculateBuy(poolId, inputAmount);
-
-                // When buying memecoin, tokens are removed from circulation
-                newCirculatingSupply = circulatingSupply - outputAmount;
-                newWethCollected = wethCollected + inputAmount;
-
-                // Process token transfers
-                inputCurrency.take(poolManager, address(this), inputAmount, true);
-                outputCurrency.settle(poolManager, address(this), outputAmount, true);
-
-                emit TokensPurchased(poolId, sender, inputAmount, outputAmount, newPrice);
-            } else {
-                // Selling memecoin for WETH
-                (outputAmount, newPrice) = strategy.calculateSell(poolId, inputAmount);
-
-                // Verify we have enough WETH liquidity
-                if (outputAmount > wethCollected) {
-                    revert InsufficientLiquidity();
-                }
-
-                // When selling memecoin, tokens are added back to circulation
-                newCirculatingSupply = circulatingSupply + inputAmount;
-                newWethCollected = wethCollected - outputAmount;
-
-                // Process token transfers
-                inputCurrency.take(poolManager, address(this), inputAmount, true);
-                outputCurrency.settle(poolManager, address(this), outputAmount, true);
-
-                emit TokensSold(poolId, sender, inputAmount, outputAmount, newPrice);
-            }
-        } else {
-            // EXACT OUTPUT
-            outputAmount = amountSpecifiedPositive;
-
-            if (isBuyingMemecoin) {
-                // User wants exact output of memecoin
-                bytes4 calculationSelector = bytes4(keccak256("calculateWethForExactTokens(bytes32,uint256)"));
-
-                // Calculate WETH needed for exact token output
-                (bool success, bytes memory returnData) =
-                    address(strategy).call(abi.encodeWithSelector(calculationSelector, poolId, outputAmount));
-
-                if (!success) {
-                    revert ExactOutputNotSupported();
-                }
-
-                (inputAmount, newPrice) = abi.decode(returnData, (uint256, uint256));
-
-                // When buying memecoin, tokens are removed from circulation
-                newCirculatingSupply = circulatingSupply - outputAmount;
-                newWethCollected = wethCollected + inputAmount;
-
-                // Process token transfers
-                inputCurrency.take(poolManager, address(this), inputAmount, true);
-                outputCurrency.settle(poolManager, address(this), outputAmount, true);
-
-                emit TokensPurchased(poolId, sender, inputAmount, outputAmount, newPrice);
-            } else {
-                // User wants exact output of WETH
-                bytes4 calculationSelector = bytes4(keccak256("calculateTokensForExactWeth(bytes32,uint256)"));
-
-                // Calculate tokens needed for exact WETH output
-                (bool success, bytes memory returnData) =
-                    address(strategy).call(abi.encodeWithSelector(calculationSelector, poolId, outputAmount));
-
-                if (!success) {
-                    revert ExactOutputNotSupported();
-                }
-
-                (inputAmount, newPrice) = abi.decode(returnData, (uint256, uint256));
-
-                // Verify we have enough WETH liquidity
-                if (outputAmount > wethCollected) {
-                    revert InsufficientLiquidity();
-                }
-
-                // When selling memecoin, tokens are added back to circulation
-                newCirculatingSupply = circulatingSupply + inputAmount;
-                newWethCollected = wethCollected - outputAmount;
-
-                // Process token transfers
-                inputCurrency.take(poolManager, address(this), inputAmount, true);
-                outputCurrency.settle(poolManager, address(this), outputAmount, true);
-
-                emit TokensSold(poolId, sender, inputAmount, outputAmount, newPrice);
-            }
-        }
-
-        // Update the pool state
-        poolStateManager.updatePoolState(poolId, newCirculatingSupply, newWethCollected, newPrice);
-
+        // Get pool information
+        PoolInfo memory pool = _getPoolInfo(poolId);
+        
+        // Determine swap parameters
+        SwapInfo memory swap = _getSwapInfo(key, params, pool.tokenAddress);
+        
+        // Execute the swap
+        SwapResult memory result = _executeSwap(poolId, swap, pool, sender);
+        
+        // Update pool state
+        poolStateManager.updatePoolState(
+            poolId, 
+            result.newCirculatingSupply, 
+            result.newWethCollected, 
+            result.newPrice
+        );
+        
         // Return delta to make core swap a no-op
         return toBeforeSwapDelta(
-            int128(int256(inputAmount)), // We've already handled this input amount
-            int128(-int256(outputAmount)) // We've already provided this output amount
+            int128(int256(result.inputAmount)),
+            int128(-int256(result.outputAmount))
         );
     }
 
+    /**
+     * @notice Get pool information
+     */
+    function _getPoolInfo(bytes32 poolId) private view returns (PoolInfo memory pool) {
+        (
+            pool.tokenAddress,
+            pool.strategyAddress,
+            pool.circulatingSupply,
+            pool.wethCollected,
+            pool.currentPrice
+        ) = poolStateManager.getInfoForHook(poolId);
+        
+        return pool;
+    }
 
+    /**
+     * @notice Determine swap parameters and validate token path
+     */
+    function _getSwapInfo(
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata params,
+        address tokenAddress
+    ) private view returns (SwapInfo memory swap) {
+        // Get token addresses
+        address token0Address = Currency.unwrap(key.currency0);
+        address token1Address = Currency.unwrap(key.currency1);
+        
+        // Determine token arrangement
+        swap.isToken0Memecoin = (token0Address == tokenAddress);
+        
+        // Verify correct token pairing
+        if (
+            !(swap.isToken0Memecoin && token1Address == wethAddress) && 
+            !(token0Address == wethAddress && token1Address == tokenAddress)
+        ) {
+            InvalidTokenPath.selector.revertWith();
+        }
+        
+        // Set basic swap parameters
+        swap.isExactInput = params.amountSpecified < 0;
+        swap.amountSpecifiedPositive = swap.isExactInput 
+            ? uint256(-params.amountSpecified) 
+            : uint256(params.amountSpecified);
+        
+        // Determine if buying or selling memecoin
+        swap.isBuyingMemecoin = swap.isExactInput 
+            ? (params.zeroForOne != swap.isToken0Memecoin) 
+            : (params.zeroForOne == swap.isToken0Memecoin);
+        
+        // Set currencies
+        swap.inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
+        swap.outputCurrency = params.zeroForOne ? key.currency1 : key.currency0;
+        
+        return swap;
+    }
 
-    // function _transitPoolToV4(TransitParams calldata params) internal {
-    //      // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-    //     params.currency0.settle(poolManager, address(this), params.amount0, true);
+    /**
+     * @notice Execute the swap based on parameters
+     */
+    function _executeSwap(
+        bytes32 poolId,
+        SwapInfo memory swap,
+        PoolInfo memory pool,
+        address sender
+    ) private returns (SwapResult memory result) {
+        IBondingCurveStrategy strategy = IBondingCurveStrategy(pool.strategyAddress);
+        
+        if (swap.isExactInput) {
+            result = _handleExactInputSwap(poolId, swap, pool, strategy, sender);
+        } else {
+            result = _handleExactOutputSwap(poolId, swap, pool, strategy, sender);
+        }
+        
+        return result;
+    }
 
-    //     // Then transfer the actual tokens from the PoolManager to the Hook
-    //     poolManager.take(params.currency0,address(this) , params.amount0);
+    /**
+     * @notice Handle exact input swaps
+     */
+    function _handleExactInputSwap(
+        bytes32 poolId,
+        SwapInfo memory swap,
+        PoolInfo memory pool,
+        IBondingCurveStrategy strategy,
+        address sender
+    ) private returns (SwapResult memory result) {
+        result.inputAmount = swap.amountSpecifiedPositive;
+        
+        if (swap.isBuyingMemecoin) {
+            // Buy memecoin with WETH
+            (result.outputAmount, result.newPrice) = strategy.calculateBuy(poolId, result.inputAmount);
+            
+            // When buying memecoin, tokens are removed from circulation
+            result.newCirculatingSupply = pool.circulatingSupply - result.outputAmount;
+            result.newWethCollected = pool.wethCollected + result.inputAmount;
+            
+            // Process token transfers
+            swap.inputCurrency.take(poolManager, address(this), result.inputAmount, true);
+            swap.outputCurrency.settle(poolManager, address(this), result.outputAmount, true);
+            
+            emit TokensPurchased(poolId, sender, result.inputAmount, result.outputAmount, result.newPrice);
+        } else {
+            // Sell memecoin for WETH
+            (result.outputAmount, result.newPrice) = strategy.calculateSell(poolId, result.inputAmount);
+            
+            // Verify we have enough WETH liquidity
+            if (result.outputAmount > pool.wethCollected) {
+                InsufficientLiquidity.selector.revertWith();
+            }
+            
+            // When selling memecoin, tokens are added back to circulation
+            result.newCirculatingSupply = pool.circulatingSupply + result.inputAmount;
+            result.newWethCollected = pool.wethCollected - result.outputAmount;
+            
+            // Process token transfers
+            swap.inputCurrency.take(poolManager, address(this), result.inputAmount, true);
+            swap.outputCurrency.settle(poolManager, address(this), result.outputAmount, true);
+            
+            emit TokensSold(poolId, sender, result.inputAmount, result.outputAmount, result.newPrice);
+        }
+        
+        return result;
+    }
 
-    //       // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-    //     params.currency1.settle(poolManager, address(this), params.amount1, true);
-
-    //     // Then transfer the actual tokens from the PoolManager to the Hook
-    //     poolManager.take(params.currency1,address(this) , params.amount1);
-
-
-    //     ModifyLiquidityParams
-    // }
+    /**
+     * @notice Handle exact output swaps
+     */
+    function _handleExactOutputSwap(
+        bytes32 poolId,
+        SwapInfo memory swap,
+        PoolInfo memory pool,
+        IBondingCurveStrategy strategy,
+        address sender
+    ) private returns (SwapResult memory result) {
+        result.outputAmount = swap.amountSpecifiedPositive;
+        
+        if (swap.isBuyingMemecoin) {
+            // Buy exact amount of memecoin with WETH
+            bytes4 calculationSelector = bytes4(keccak256("calculateWethForExactTokens(bytes32,uint256)"));
+            
+            // Calculate WETH needed for exact token output
+            (bool success, bytes memory returnData) = address(strategy).call(
+                abi.encodeWithSelector(calculationSelector, poolId, result.outputAmount)
+            );
+            
+            if (!success) {
+                ExactOutputNotSupported.selector.revertWith();
+            }
+            
+            (result.inputAmount, result.newPrice) = abi.decode(returnData, (uint256, uint256));
+            
+            // When buying memecoin, tokens are removed from circulation
+            result.newCirculatingSupply = pool.circulatingSupply - result.outputAmount;
+            result.newWethCollected = pool.wethCollected + result.inputAmount;
+            
+            // Process token transfers
+            swap.inputCurrency.take(poolManager, address(this), result.inputAmount, true);
+            swap.outputCurrency.settle(poolManager, address(this), result.outputAmount, true);
+            
+            emit TokensPurchased(poolId, sender, result.inputAmount, result.outputAmount, result.newPrice);
+        } else {
+            // Sell memecoin for exact WETH output
+            bytes4 calculationSelector = bytes4(keccak256("calculateTokensForExactWeth(bytes32,uint256)"));
+            
+            // Calculate tokens needed for exact WETH output
+            (bool success, bytes memory returnData) = address(strategy).call(
+                abi.encodeWithSelector(calculationSelector, poolId, result.outputAmount)
+            );
+            
+            if (!success) {
+                ExactOutputNotSupported.selector.revertWith();
+            }
+            
+            (result.inputAmount, result.newPrice) = abi.decode(returnData, (uint256, uint256));
+            
+            // Verify we have enough WETH liquidity
+            if (result.outputAmount > pool.wethCollected) {
+                InsufficientLiquidity.selector.revertWith();
+            }
+            
+            // When selling memecoin, tokens are added back to circulation
+            result.newCirculatingSupply = pool.circulatingSupply + result.inputAmount;
+            result.newWethCollected = pool.wethCollected - result.outputAmount;
+            
+            // Process token transfers
+            swap.inputCurrency.take(poolManager, address(this), result.inputAmount, true);
+            swap.outputCurrency.settle(poolManager, address(this), result.outputAmount, true);
+            
+            emit TokensSold(poolId, sender, result.inputAmount, result.outputAmount, result.newPrice);
+        }
+        
+        return result;
+    }
 }
