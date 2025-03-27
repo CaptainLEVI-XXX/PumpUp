@@ -14,6 +14,9 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {Hooks, IHooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {IPumpUpHook} from "../src/interfaces/IPumpUpHook.sol";
+import {PumpUpHook} from "../src/PumpUpHook.sol";
+import {IBondingCurveStrategy} from "./interfaces/IBondingCurveStrategy.sol";
 
 /**
  * @title PoolStateManager
@@ -46,7 +49,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         uint256 initialSupply;
         address creator;
         uint256 premineAmount;
-        uint256 initialPrice;
     }
 
     /**
@@ -55,6 +57,10 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     struct TransitionConfig {
         TransitionType transitionType;
         uint256 transitionData;
+    }
+
+    struct IntializationParams {
+        uint256 wethAmount;
     }
 
     /**
@@ -178,7 +184,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param _poolCreationFee Fee for creating a pool
      */
     constructor(address _owner, address _weth, uint256 _poolCreationFee) {
-        if (_weth == address(0)) InvalidAddress.selector.revertWith();
+        if (_weth == address(0) || _owner == address(0)) InvalidAddress.selector.revertWith();
         weth = _weth;
         poolCreationFee = _poolCreationFee;
         _setSuperAdmin(_owner);
@@ -219,11 +225,11 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @return poolId The ID of the new pool
      * @return tokenAddress The address of the new memecoin
      */
-    function createMemePool(
+    function createPumpUp(
         LaunchParams calldata launchParams,
         bytes32 bondingCurveStrategy,
         TransitionConfig calldata transitionConfig
-    ) external payable nonReentrant returns (bytes32 poolId, address tokenAddress) {
+    ) external payable nonReentrant returns (bytes32 poolId, address tokenAddress, uint256 nftId) {
         // Check if payment is sufficient
         if (msg.value < poolCreationFee) {
             InsufficientPoolCreationFee.selector.revertWith();
@@ -245,7 +251,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
 
         // Make sender the creator if not specified
         address creator = launchParams.creator == address(0) ? msg.sender : launchParams.creator;
-        uint256 nftId;
 
         // Launch the memecoin via the NFT contract
         (tokenAddress, nftId) = nftContract.launchMemeCoin(launchParams);
@@ -264,8 +269,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
             tokenAddress,
             nftId,
             creator,
-            launchParams.initialSupply,
-            launchParams.initialPrice,
+            launchParams.initialSupply - launchParams.premineAmount,
             bondingCurveStrategy,
             transitionConfig
         );
@@ -277,7 +281,9 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         // Increment strategy usage count
         strategyManager.incrementUsageCount(bondingCurveStrategy);
 
-        _initializeV4Pool(tokenAddress);
+        // IERC20(weth).transferFrom(msg.sender,address(this),launchParams.wethAmount);
+
+        // _initializeV4Pool(launchParams,tokenAddress,poolId);
 
         // Refund excess ETH
         if (msg.value > poolCreationFee) {
@@ -287,29 +293,52 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
 
         emit PoolCreated(poolId, tokenAddress, creator, bondingCurveStrategy);
 
-        return (poolId, tokenAddress);
+        return (poolId, tokenAddress, nftId);
     }
 
-    function _initializeV4Pool(address tokenAddress) internal {
+    function initializePool(uint256 wethAmount, bytes32 poolId)
+        public
+        returns (Currency currency0, Currency currency1)
+    {
+        PoolState memory poolInfo = poolStates[poolId];
         // Check if our pool currency is flipped
-        bool currencyFlipped = weth >= tokenAddress;
+        bool currencyFlipped = weth >= poolInfo.tokenAddress;
+        if (msg.sender != poolInfo.creator) NotAuthorized.selector.revertWith();
+
+        IERC20(weth).transferFrom(msg.sender, address(this), wethAmount);
+
+        currency0 = Currency.wrap(!currencyFlipped ? weth : poolInfo.tokenAddress);
+        currency1 = Currency.wrap(currencyFlipped ? weth : poolInfo.tokenAddress);
 
         // Create our Uniswap pool and store the pool key for lookups
-        PoolKey memory _poolKey = PoolKey({
-            currency0: Currency.wrap(!currencyFlipped ? weth : tokenAddress),
-            currency1: Currency.wrap(currencyFlipped ? weth : tokenAddress),
-            fee: 0,
-            tickSpacing: 60,
-            hooks: IHooks(hookContract)
-        });
+        PoolKey memory _poolKey =
+            PoolKey({currency0: currency0, currency1: currency1, fee: 0, tickSpacing: 60, hooks: IHooks(hookContract)});
 
         //storing the poolk key to tokenaAddress
 
-        _poolKeys[tokenAddress] = _poolKey;
+        _poolKeys[poolInfo.tokenAddress] = _poolKey;
+        uint256 amount0 = !currencyFlipped ? wethAmount : poolInfo.totalSupply;
+        uint256 amount1 = currencyFlipped ? wethAmount : poolInfo.totalSupply;
+
+        if (poolInfo.transitionConfig.transitionData != 0) {
+            address strategyImpl = strategyManager.getStrategyImplementation(poolInfo.bondingCurveStrategy);
+
+            IBondingCurveStrategy(strategyImpl).initialize(
+                poolId, abi.encode(wethAmount, poolInfo.totalSupply, 0, 0, poolInfo.totalSupply)
+            );
+
+            PumpUpHook.LiquidityParams memory liquidityparams =
+                PumpUpHook.LiquidityParams({amount0: amount0, amount1: amount1, poolId: poolId});
+            IERC20(weth).approve(hookContract, wethAmount);
+            IERC20(poolInfo.tokenAddress).approve(hookContract, poolInfo.totalSupply);
+            IPumpUpHook(hookContract).addLiquidity(_poolKey, liquidityparams, msg.sender);
+        }
 
         // poolManager.initialize(_poolKey, Constants.SQRT_PRICE_1_1);
 
         ///@notice need to check whether the pool is initialized
+
+        return (currency0, currency1);
     }
 
     /**
@@ -630,7 +659,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param nftId NFT ID
      * @param creator Creator address
      * @param initialSupply Initial token supply
-     * @param initialPrice Initial token price
      * @param bondingCurveStrategy Bonding curve strategy ID
      * @param transitionConfig Transition configuration
      */
@@ -640,7 +668,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         uint256 nftId,
         address creator,
         uint256 initialSupply,
-        uint256 initialPrice,
         bytes32 bondingCurveStrategy,
         TransitionConfig memory transitionConfig
     ) internal {
@@ -653,7 +680,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         state.isTransitioned = false;
         state.creationTimestamp = block.timestamp;
         state.wethCollected = 0;
-        state.lastPrice = initialPrice;
         state.circulatingSupply = 0;
         state.totalSupply = initialSupply;
         state.bondingCurveStrategy = bondingCurveStrategy;
@@ -687,5 +713,29 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         } else {
             InvalidTransitionParams.selector.revertWith();
         }
+    }
+
+    function getInfoForHook(bytes32 poolId)
+        public
+        view
+        returns (
+            address memecoin,
+            address bondingCurveImplementation,
+            uint256 currentCirculatingSupply,
+            uint256 currentWethCollected,
+            uint256 currentPrice
+        )
+    {
+        PoolState memory poolInfo = poolStates[poolId];
+
+        bondingCurveImplementation = strategyManager.getStrategyImplementation(poolInfo.bondingCurveStrategy);
+
+        return (
+            poolInfo.tokenAddress,
+            bondingCurveImplementation,
+            poolInfo.circulatingSupply,
+            poolInfo.wethCollected,
+            poolInfo.lastPrice
+        );
     }
 }

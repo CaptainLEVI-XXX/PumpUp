@@ -13,7 +13,6 @@ import {IBondingCurveStrategy} from "../interfaces/IBondingCurveStrategy.sol";
 /**
  * @title ExponentialBondingCurve
  * @notice Implements an exponential bonding curve for token trading with exact output support
- * @dev Optimized to compile without --via-ir flag
  */
 contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
     using CustomRevert for bytes4;
@@ -50,6 +49,7 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
     event TokensSold(bytes32 indexed poolId, uint256 tokenAmount, uint256 wethAmount, uint256 newPrice);
     event ExactTokensCalculated(bytes32 indexed poolId, uint256 wethAmount, uint256 tokenAmount);
     event ExactWethCalculated(bytes32 indexed poolId, uint256 tokenAmount, uint256 wethAmount);
+    event InitialDeposit(bytes32 indexed poolId, uint256 wethDeposit, uint256 initialTokenAmount, uint256 initialPrice);
 
     // ============ Errors ============
 
@@ -86,11 +86,52 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         return STRATEGY_NAME;
     }
 
+    // /**
+    //  * @notice Initializes the strategy for a new pool
+    //  * @param poolId The ID of the pool
+    //  * @param params The initialization parameters
+    //  * @dev Expects encoded (initialPrice, steepness, maxPriceFactor, midpoint, totalSupply)
+    //  */
+    // function initialize(bytes32 poolId, bytes calldata params) external override {
+    //     // Only the pool state manager can initialize
+    //     if (msg.sender != address(poolStateManager)) {
+    //         revert NotPoolStateManager();
+    //     }
+
+    //     // Decode parameters - Use a more gas efficient way to extract what we need
+    //     (
+    //         uint256 initialPrice,
+    //         uint256 steepness,
+    //         , // maxPriceFactor not used
+    //         , // midpoint not used
+    //         uint256 totalSupply
+    //     ) = abi.decode(params, (uint256, uint256, uint256, uint256, uint256));
+
+    //     // Validate parameters
+    //     if (totalSupply == 0) {
+    //         revert InvalidParameters();
+    //     }
+
+    //     // Convert to UD60x18 format and store parameters
+    //     curveParams[poolId] = CurveParameters({
+    //         initialPrice: ud(initialPrice == 0 ? DEFAULT_INITIAL_PRICE : initialPrice),
+    //         steepness: ud(steepness == 0 ? DEFAULT_STEEPNESS : steepness),
+    //         totalSupply: totalSupply
+    //     });
+
+    //     emit StrategyInitialized(
+    //         poolId,
+    //         initialPrice == 0 ? DEFAULT_INITIAL_PRICE : initialPrice,
+    //         steepness == 0 ? DEFAULT_STEEPNESS : steepness,
+    //         totalSupply
+    //     );
+    // }
+
     /**
-     * @notice Initializes the strategy for a new pool
+     * @notice Initializes the strategy for a new pool with initial price based on WETH deposit
      * @param poolId The ID of the pool
      * @param params The initialization parameters
-     * @dev Expects encoded (initialPrice, steepness, maxPriceFactor, midpoint, totalSupply)
+     * @dev Expects encoded (initialWethDeposit, initialTokenAmount, steepness, wethPriceUSD, totalSupply)
      */
     function initialize(bytes32 poolId, bytes calldata params) external override {
         // Only the pool state manager can initialize
@@ -98,33 +139,43 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
             revert NotPoolStateManager();
         }
 
-        // Decode parameters - Use a more gas efficient way to extract what we need
+        // Decode parameters
         (
-            uint256 initialPrice,
-            uint256 steepness,
-            , // maxPriceFactor not used
-            , // midpoint not used
-            uint256 totalSupply
+            uint256 initialWethDeposit, // Amount of WETH deposited to create the pool
+            uint256 initialTokenAmount, // Initial token amount to be sold/distributed
+            uint256 steepness, // Steepness factor 'b'
+            uint256 wethPriceUSD, // Current WETH price in USD (optional)
+            uint256 totalSupply // Total token supply
         ) = abi.decode(params, (uint256, uint256, uint256, uint256, uint256));
 
         // Validate parameters
-        if (totalSupply == 0) {
+        if (initialWethDeposit == 0 || initialTokenAmount == 0 || totalSupply == 0) {
             revert InvalidParameters();
         }
 
-        // Convert to UD60x18 format and store parameters
+        // Calculate initial price 'a' based on WETH deposit and initial tokens
+        // This represents how much 1 token costs in WETH at the very beginning
+        UD60x18 initialPrice = ud(initialWethDeposit).div(ud(initialTokenAmount));
+
+        // Store the curve parameters
         curveParams[poolId] = CurveParameters({
-            initialPrice: ud(initialPrice == 0 ? DEFAULT_INITIAL_PRICE : initialPrice),
+            initialPrice: initialPrice, // Calculated from WETH deposit
             steepness: ud(steepness == 0 ? DEFAULT_STEEPNESS : steepness),
             totalSupply: totalSupply
         });
 
+        // Record initial amount
+        // initialAmounts[poolId] = InitialAmounts({
+        //     wethDeposit: initialWethDeposit,
+        //     tokenAmount: initialTokenAmount,
+        //     wethPriceUSD: wethPriceUSD
+        // });
+
         emit StrategyInitialized(
-            poolId,
-            initialPrice == 0 ? DEFAULT_INITIAL_PRICE : initialPrice,
-            steepness == 0 ? DEFAULT_STEEPNESS : steepness,
-            totalSupply
+            poolId, intoUint256(initialPrice), steepness == 0 ? DEFAULT_STEEPNESS : steepness, totalSupply
         );
+
+        emit InitialDeposit(poolId, initialWethDeposit, initialTokenAmount, intoUint256(initialPrice));
     }
 
     /**
@@ -262,21 +313,18 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
         if (exactTokenAmount == 0) revert InvalidAmount();
 
         // Get pool info and check pool status
-        address tokenAddress;
-        bool isTransitioned;
-        {
-            // Limit variable scope to reduce stack depth
-            (
-                tokenAddress,
-                , // creator not used
-                , // wethCollected not used
-                , // lastPrice not used
-                isTransitioned,
-                // bondingCurveStrategy not used
-            ) = poolStateManager.getPoolInfo(poolId);
 
-            if (isTransitioned) revert PoolTransitioned();
-        }
+        // Limit variable scope to reduce stack depth
+
+        (
+            address tokenAddress,
+            address bondingCurveImplementation,
+            uint256 currentCirculatingSupply,
+            uint256 currentWethCollected,
+            uint256 currentPrice
+        ) = poolStateManager.getInfoForHook(poolId);
+
+        // if (isTransitioned) revert PoolTransitioned();
 
         // Get curve parameters
         CurveParameters memory params = curveParams[poolId];
@@ -429,28 +477,24 @@ contract ExponentialBondingCurve is IBondingCurveStrategy, SuperAdmin2Step {
     function getCurrentPrice(bytes32 poolId) external view override returns (uint256) {
         bool isTransitioned;
         uint256 lastPrice;
-        address tokenAddress;
 
-        {
-            (
-                tokenAddress,
-                , // creator not used
-                , // wethCollected not used
-                lastPrice,
-                isTransitioned,
-                // bondingCurveStrategy not used
-            ) = poolStateManager.getPoolInfo(poolId);
+        (
+            address tokenAddress,
+            address bondingCurveImplementation,
+            uint256 currentCirculatingSupply,
+            uint256 currentWethCollected,
+            uint256 currentPrice
+        ) = poolStateManager.getInfoForHook(poolId);
 
-            if (isTransitioned) return lastPrice;
-        }
+        // if (isTransitioned) return lastPrice;
 
         CurveParameters memory params = curveParams[poolId];
         if (params.totalSupply == 0) revert InvalidPoolId();
 
         // Calculate circulating supply
-        uint256 heldByManager = IERC20(tokenAddress).balanceOf(address(poolStateManager));
-        uint256 totalTokenSupply = IERC20(tokenAddress).totalSupply();
-        UD60x18 circulatingSupply = ud(totalTokenSupply - heldByManager);
+        // uint256 heldByManager = IERC20(tokenAddress).balanceOf(address(poolStateManager));
+        // uint256 totalTokenSupply = IERC20(tokenAddress).totalSupply();
+        UD60x18 circulatingSupply = ud(currentCirculatingSupply);
 
         return intoUint256(_calculatePrice(circulatingSupply, params));
     }

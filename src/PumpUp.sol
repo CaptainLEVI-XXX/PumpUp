@@ -27,8 +27,8 @@ contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
     error InvalidInitialSupply(uint256 supply);
     error PremineExceedsInitialAmount(uint256 premine, uint256 initialAmount);
 
-    constructor(string memory _baseUri) {
-        _setSuperAdmin(msg.sender);
+    constructor(string memory _baseUri, address owner) {
+        _setSuperAdmin(owner);
         baseURI = _baseUri;
     }
 
@@ -69,15 +69,10 @@ contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
         returns (address _memecoin, uint256 _tokenId)
     {
         // Uncomment these validations for production
-        /*
-        if (params.initialSupply > MAX_FAIR_LAUNCH_TOKENS) {
-            revert InvalidInitialSupply(params.initialSupply);
-        }
-        
-        if (params.premineAmount > params.initialSupply) {
-            revert PremineExceedsInitialAmount(params.premineAmount, params.initialSupply);
-        }
-        */
+
+        if (params.initialSupply > MAX_FAIR_LAUNCH_TOKENS) InvalidInitialSupply.selector.revertWith();
+
+        if (params.premineAmount > params.initialSupply) PremineExceedsInitialAmount.selector.revertWith();
 
         // Store the current token ID and increment
         _tokenId = nextTokenId;
@@ -96,7 +91,8 @@ contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
         tokenIdToAddress[_tokenId] = _memecoin;
 
         // Mint initial supply to the PoolStateManager
-        memecoin.mint(poolStateManager, params.initialSupply);
+        memecoin.mint(poolStateManager, params.initialSupply - params.premineAmount);
+        memecoin.mint(params.creator, params.premineAmount);
     }
 
     /**

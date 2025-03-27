@@ -32,4 +32,15 @@ interface IPoolStateManager {
 
     function updatePoolState(bytes32 poolId, uint256 circulatingSupply, uint256 wethCollected, uint256 lastPrice)
         external;
+
+    function getInfoForHook(bytes32 poolId)
+        external
+        view
+        returns (
+            address memecoin,
+            address bondingCurveStrategy,
+            uint256 currentCirculatingSupply,
+            uint256 currentWethCollected,
+            uint256 currentPrice
+        );
 }

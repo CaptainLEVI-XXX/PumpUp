@@ -17,6 +17,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BondingCurveSwap} from "./helpers/BondingCurveHandler.sol";
+import {console} from "forge-std/console.sol";
+import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
 
 contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
     using CurrencySettler for Currency;
@@ -32,16 +34,17 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
     error ZeroAddress();
 
     // Track liquidity provided by each user for each pool
-    mapping(address user => mapping(bytes32 poolId => uint256 amount)) public userLiquidity;
+    mapping(address user => mapping(bytes32 poolId => mapping(address token => uint256 amount))) public userLiquidity;
 
-    // Track total liquidity for each pool
-    mapping(bytes32 poolId => uint256 liquidity) public totalPoolLiquidity;
+    // // Track total liquidity for each pool
+    // mapping(bytes32 poolId => uint256 liquidity) public totalPoolLiquidity;
 
     // WETH price oracle contract
     IPriceOracle private wethPriceOracle;
 
     struct CallbackData {
-        uint256 amountEach;
+        uint256 amount0;
+        uint256 amount1;
         Currency currency0;
         Currency currency1;
         address sender;
@@ -50,13 +53,14 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
     }
 
     struct LiquidityParams {
-        uint256 amountEach;
+        uint256 amount0;
+        uint256 amount1;
         bytes32 poolId;
     }
 
     // Events
-    event LiquidityAdded(bytes32 indexed poolId, address indexed user, uint256 amount);
-    event LiquidityRemoved(bytes32 indexed poolId, address indexed user, uint256 amount);
+    event LiquidityAdded(bytes32 indexed poolId, address indexed user, uint256 amount0, uint256 amount1);
+    event LiquidityRemoved(bytes32 indexed poolId, address indexed user, uint256 amount0, uint256 amount1);
 
     constructor(IPoolManager _manager) BaseHook(_manager) {}
 
@@ -68,7 +72,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
             ZeroAddress.selector.revertWith();
         }
         wethPriceOracle = IPriceOracle(_wethPriceOracle);
-        initializeBondingCurveSwap(poolStateManager, wethAddress);
+        initializeBondingCurveSwap(IPoolStateManager(_poolStateManager), _wethAddress);
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -127,35 +131,43 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
      * @param params Pool key
      * @param liquidityParams Parameters including amount and pool ID
      */
-    function addLiquidity(PoolKey calldata params, LiquidityParams calldata liquidityParams) external {
-        if (liquidityParams.amountEach == 0) InvalidAmount.selector.revertWith();
+    function addLiquidity(PoolKey calldata params, LiquidityParams calldata liquidityParams, address caller) external {
+        if (liquidityParams.amount0 == 0 && liquidityParams.amount1 == 0) InvalidAmount.selector.revertWith();
+        if (caller == msg.sender || msg.sender == address(poolStateManager)) {
+            // Only allow adding liquidity via this method if pool hasn't transitioned
+            // After transition, liquidity should be added through regular Uniswap functions
+            bool isTransitioned = poolStateManager.isPoolTransitioned(liquidityParams.poolId);
+            if (isTransitioned) PoolTransitioned.selector.revertWith();
 
-        // Only allow adding liquidity via this method if pool hasn't transitioned
-        // After transition, liquidity should be added through regular Uniswap functions
-        bool isTransitioned = poolStateManager.isPoolTransitioned(liquidityParams.poolId);
-        if (isTransitioned) PoolTransitioned.selector.revertWith();
+            // Get token addresses
+            address token0Address = Currency.unwrap(params.currency0);
+            address token1Address = Currency.unwrap(params.currency1);
 
-        // Update liquidity tracking
-        unchecked {
-            userLiquidity[msg.sender][liquidityParams.poolId] += liquidityParams.amountEach;
-            totalPoolLiquidity[liquidityParams.poolId] += liquidityParams.amountEach;
+            // Update liquidity tracking
+            unchecked {
+                userLiquidity[caller][liquidityParams.poolId][token0Address] += liquidityParams.amount0;
+                userLiquidity[caller][liquidityParams.poolId][token1Address] += liquidityParams.amount1;
+            }
+
+            // Call to unlock for token transfers
+            poolManager.unlock(
+                abi.encode(
+                    CallbackData({
+                        amount0: liquidityParams.amount0,
+                        amount1: liquidityParams.amount1,
+                        currency0: params.currency0,
+                        currency1: params.currency1,
+                        sender: msg.sender,
+                        isRemove: false,
+                        poolId: liquidityParams.poolId
+                    })
+                )
+            );
+
+            emit LiquidityAdded(liquidityParams.poolId, caller, liquidityParams.amount0, liquidityParams.amount1);
+        } else {
+            UnexpectedOperation.selector.revertWith();
         }
-
-        // Call to unlock for token transfers
-        poolManager.unlock(
-            abi.encode(
-                CallbackData({
-                    amountEach: liquidityParams.amountEach,
-                    currency0: params.currency0,
-                    currency1: params.currency1,
-                    sender: msg.sender,
-                    isRemove: false,
-                    poolId: liquidityParams.poolId
-                })
-            )
-        );
-
-        emit LiquidityAdded(liquidityParams.poolId, msg.sender, liquidityParams.amountEach);
     }
 
     /**
@@ -164,30 +176,44 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
      * @param liquidityParams Parameters including amount and pool ID
      */
     function removeLiquidity(PoolKey calldata params, LiquidityParams calldata liquidityParams) external {
-        if (liquidityParams.amountEach == 0) {
-            InvalidAmount.selector.revertWith();
-        }
+        if (liquidityParams.amount0 == 0 && liquidityParams.amount1 == 0) InvalidAmount.selector.revertWith();
 
         // Only allow removing liquidity via this method if pool hasn't transitioned
         bool isTransitioned = poolStateManager.isPoolTransitioned(liquidityParams.poolId);
         if (isTransitioned) PoolTransitioned.selector.revertWith();
 
+        // Get token addresses
+        address token0Address = Currency.unwrap(params.currency0);
+        address token1Address = Currency.unwrap(params.currency1);
+
+        // address memecoin = poolStateManager.memecoinId(liquidityParams.poolId);
+
+        // bool isMemecoinCurrency0 = memecoin == token0Address ? true:false;
+
         // Check if user has enough liquidity
-        if (userLiquidity[msg.sender][liquidityParams.poolId] < liquidityParams.amountEach) {
+        if (
+            userLiquidity[msg.sender][liquidityParams.poolId][token0Address] < liquidityParams.amount0
+                || userLiquidity[msg.sender][liquidityParams.poolId][token1Address] < liquidityParams.amount1
+        ) {
             InsufficientLiquidity.selector.revertWith();
         }
 
+        console.log("Unchecked Start");
+
         unchecked {
             // Update liquidity tracking
-            userLiquidity[msg.sender][liquidityParams.poolId] -= liquidityParams.amountEach;
-            totalPoolLiquidity[liquidityParams.poolId] -= liquidityParams.amountEach;
+            userLiquidity[msg.sender][liquidityParams.poolId][token0Address] -= liquidityParams.amount0;
+            userLiquidity[msg.sender][liquidityParams.poolId][token1Address] -= liquidityParams.amount1;
         }
+
+        console.log("Unchecked Finish");
 
         // Call to unlock for token transfers
         poolManager.unlock(
             abi.encode(
                 CallbackData({
-                    amountEach: liquidityParams.amountEach,
+                    amount0: liquidityParams.amount0,
+                    amount1: liquidityParams.amount1,
                     currency0: params.currency0,
                     currency1: params.currency1,
                     sender: msg.sender,
@@ -197,75 +223,93 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
             )
         );
 
-        emit LiquidityRemoved(liquidityParams.poolId, msg.sender, liquidityParams.amountEach);
+        emit LiquidityRemoved(liquidityParams.poolId, msg.sender, liquidityParams.amount0, liquidityParams.amount1);
     }
 
-    /**
-     * @notice Handle token transfers during unlock
-     * @param data Callback data
-     * @return Empty bytes
-     */
+    // /**
+    //  * @notice Handle token transfers during unlock
+    //  * @param data Callback data
+    //  * @return Empty bytes
+    //  */
     function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
         CallbackData memory callbackData = abi.decode(data, (CallbackData));
 
+        (
+            address tokenAddress,
+            address bondingCurveImplementation,
+            uint256 currentCirculatingSupply,
+            uint256 currentWethCollected,
+            uint256 currentPrice
+        ) = poolStateManager.getInfoForHook(callbackData.poolId);
+
+        // Get token addresses
+        address token0Address = Currency.unwrap(callbackData.currency0);
+
+        bool isMemecoinCurrency0 = tokenAddress == token0Address ? true : false;
+        uint256 newCirculatingSupply;
+        uint256 newWethCollected;
+
+        console.log("I'm here at unclock Step 1");
+
         if (callbackData.isRemove) {
             // For removing liquidity:
-            // Take tokens from hook and settle to the user
-            callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
-            callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, true);
+            // 1. Burn our claim tokens (settle with burn=true)
+            // 2. Transfer actual tokens to the user (take with claims=false)
 
-            // Get current pool state
-            (address tokenAddress,,,,, bytes32 bondingCurveStrategy) = poolStateManager.getPoolInfo(callbackData.poolId);
-            (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
+            // For currency0, burn claim tokens and transfer actual tokens to the user
+            if (callbackData.amount0 > 0) {
+                // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+                callbackData.currency0.settle(poolManager, address(this), callbackData.amount0, true);
 
-            // Calculate new circulating supply
-            uint256 newCirculatingSupply = currentCirculatingSupply - callbackData.amountEach;
+                // Then transfer the actual tokens from the PoolManager to the user
+                poolManager.take(callbackData.currency0, callbackData.sender, callbackData.amount0);
+            }
 
-            // Get the current WETH collected and price
-            (,, uint256 currentWethCollected, uint256 currentPrice,,) =
-                poolStateManager.getPoolInfo(callbackData.poolId);
+            // For currency1, burn claim tokens and transfer actual tokens to the user
+            if (callbackData.amount1 > 0) {
+                // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+                callbackData.currency1.settle(poolManager, address(this), callbackData.amount1, true);
 
-            // Calculate new price using bonding curve strategy
-            IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(bondingCurveStrategy)));
-            uint256 newPrice = strategy.getCurrentPrice(callbackData.poolId);
+                // Then transfer the actual tokens from the PoolManager to the user
+                poolManager.take(callbackData.currency1, callbackData.sender, callbackData.amount1);
+            }
 
-            // Update pool state in the PoolStateManager
-            poolStateManager.updatePoolState(
-                callbackData.poolId,
-                newCirculatingSupply,
-                currentWethCollected, // WETH collected doesn't change for removal
-                newPrice
-            );
+            if (isMemecoinCurrency0) {
+                // Calculate new circulating supply
+                console.log("I'm here at the first block");
+                newCirculatingSupply = currentCirculatingSupply - callbackData.amount0;
+                newWethCollected = currentWethCollected - callbackData.amount1;
+            } else {
+                console.log("I'm here at the second block");
+                newCirculatingSupply = currentCirculatingSupply - callbackData.amount1;
+                newWethCollected = currentWethCollected - callbackData.amount0;
+            }
         } else {
             // For adding liquidity:
             // Take tokens from user
-            callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
-            callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amountEach, false);
+            callbackData.currency0.settle(poolManager, callbackData.sender, callbackData.amount0, false);
+            callbackData.currency1.settle(poolManager, callbackData.sender, callbackData.amount1, false);
 
             // Move tokens to hook
-            callbackData.currency0.take(poolManager, address(this), callbackData.amountEach, true);
-            callbackData.currency1.take(poolManager, address(this), callbackData.amountEach, true);
+            callbackData.currency0.take(poolManager, address(this), callbackData.amount0, true);
+            callbackData.currency1.take(poolManager, address(this), callbackData.amount1, true);
 
-            // Get current pool state
-            (address tokenAddress,,,,, bytes32 bondingCurveStrategy) = poolStateManager.getPoolInfo(callbackData.poolId);
-            (,, uint256 currentCirculatingSupply,,) = poolStateManager.getExtendedPoolInfo(callbackData.poolId);
-
-            // Calculate new circulating supply
-            uint256 newCirculatingSupply = currentCirculatingSupply + callbackData.amountEach;
-
-            // Get the current WETH collected
-            (,, uint256 currentWethCollected,,,) = poolStateManager.getPoolInfo(callbackData.poolId);
-
-            // Add the new WETH contributed
-            uint256 newWethCollected = currentWethCollected + callbackData.amountEach;
-
-            // Calculate new price using bonding curve strategy
-            IBondingCurveStrategy strategy = IBondingCurveStrategy(address(bytes20(bondingCurveStrategy)));
-            uint256 newPrice = strategy.getCurrentPrice(callbackData.poolId);
-
-            // Update pool state in the PoolStateManager
-            poolStateManager.updatePoolState(callbackData.poolId, newCirculatingSupply, newWethCollected, newPrice);
+            if (isMemecoinCurrency0) {
+                // Calculate new circulating supply
+                newCirculatingSupply = currentCirculatingSupply + callbackData.amount0;
+                newWethCollected = currentWethCollected + callbackData.amount1;
+            } else {
+                newCirculatingSupply = currentCirculatingSupply + callbackData.amount1;
+                newWethCollected = currentWethCollected + callbackData.amount0;
+            }
         }
+
+        // Calculate new price using bonding curve strategy
+        IBondingCurveStrategy strategy = IBondingCurveStrategy(bondingCurveImplementation);
+        uint256 newPrice = strategy.getCurrentPrice(callbackData.poolId);
+
+        // Update pool state in the PoolStateManager
+        poolStateManager.updatePoolState(callbackData.poolId, newCirculatingSupply, newWethCollected, newPrice);
 
         return "";
     }
@@ -300,17 +344,8 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
      * @param poolId Pool ID
      * @return User's liquidity amount
      */
-    function getUserLiquidity(address user, bytes32 poolId) external view returns (uint256) {
-        return userLiquidity[user][poolId];
-    }
-
-    /**
-     * @notice Get the total liquidity in a specific pool
-     * @param poolId Pool ID
-     * @return Total pool liquidity
-     */
-    function getPoolLiquidity(bytes32 poolId) external view returns (uint256) {
-        return totalPoolLiquidity[poolId];
+    function getUserLiquidity(address user, bytes32 poolId, address token) external view returns (uint256) {
+        return userLiquidity[user][poolId][token];
     }
 
     /**

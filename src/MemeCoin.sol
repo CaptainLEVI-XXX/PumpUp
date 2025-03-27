@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IMemeCoin} from "./interfaces/IMemeCoin.sol";
-import {INft} from "./interfaces/INft.sol";
+import {IPumpUp} from "./interfaces/IPumpUp.sol";
 import {ERC20} from "@solady/tokens/ERC20.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
@@ -69,7 +69,7 @@ contract MemeCoin is ERC20, IMemeCoin {
      * @return creator_ Creator address or zero if NFT is burned
      */
     function creator() external view override returns (address creator_) {
-        INft nftInterface = INft(nftAddress_);
+        IPumpUp nftInterface = IPumpUp(nftAddress_);
         uint256 tokenId = nftInterface.tokenId(address(this));
 
         // Handle case where the token has been burned
