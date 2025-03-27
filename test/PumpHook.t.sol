@@ -11,6 +11,10 @@ import {Hooks, IHooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {PumpUpHook} from "../src/PumpUpHook.sol";
 import {IBondingCurveStrategy} from "../src/interfaces/IBondingCurveStrategy.sol";
 import {BondingCurveSwap} from "../src/helpers/BondingCurveHandler.sol";
+import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {console} from "forge-std/console.sol";
 
 /**
  * @title PumpUpHookTest
@@ -150,6 +154,100 @@ contract PumpUpHookTest is Test, TestHelper {
         // Verify claim tokens in the hook have decreased
         (uint256 wethClaimBalance,) = _getHookClaimBalances();
         assertEq(wethClaimBalance, INITIAL_WETH_AMOUNT, "Hook should have decreased claim tokens for WETH");
+    }
+
+    function test_swap_exactInput_zeroForOne() public {
+        // Add liquidity
+        _addLiquidity(LIQUIDITY_PROVIDER, LP_WETH_AMOUNT);
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+        // Swap exact input 100 Token A
+
+        vm.startPrank(UNAUTHORIZED_USER);
+        weth.mint(UNAUTHORIZED_USER, 10 ether);
+        weth.approve(address(swapRouter), 10 ether);
+        // weth.approve(address(pumpUpHook),10 ether);
+        uint256 balanceOfTokenABefore = poolKey.currency0.balanceOf(UNAUTHORIZED_USER);
+        uint256 balanceOfTokenBBefore = poolKey.currency1.balanceOf(UNAUTHORIZED_USER);
+
+        console.log("balanceOfTokenA before", balanceOfTokenABefore);
+        console.log("balanceOfTokenB before", balanceOfTokenBBefore);
+        console.log("balance of weth-Hook before swap", IERC20Minimal(wethAddress).balanceOf(address(pumpUpHook)));
+        console.log("balance of memecoin-Hook before swap", IERC20Minimal(memecoin).balanceOf(address(pumpUpHook)));
+        console.log("balance of weth-Manager before swap", IERC20Minimal(wethAddress).balanceOf(address(manager)));
+        console.log("balance of memecoin-manager before swap", IERC20Minimal(memecoin).balanceOf(address(manager)));
+
+        bytes memory data = abi.encode(poolId);
+
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -10 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            settings,
+            data
+        );
+
+        uint256 balanceOfTokenAAfter = poolKey.currency0.balanceOf(UNAUTHORIZED_USER);
+        uint256 balanceOfTokenBAfter = poolKey.currency1.balanceOf(UNAUTHORIZED_USER);
+
+        console.log("balanceOfTokenAAfter", balanceOfTokenAAfter);
+        console.log("balanceOfTokenBAfter", balanceOfTokenBAfter);
+        console.log("balance of weth-Hook after swap", IERC20Minimal(wethAddress).balanceOf(address(pumpUpHook)));
+        console.log("balance of memecoin-Hook after swap", IERC20Minimal(memecoin).balanceOf(address(pumpUpHook)));
+        console.log("balance of weth-Manager after swap", IERC20Minimal(wethAddress).balanceOf(address(manager)));
+        console.log("balance of memecoin-manager after swap", IERC20Minimal(memecoin).balanceOf(address(manager)));
+    }
+
+    function test_swap_exactInput_OneForZero() public {
+        // Add liquidity
+        _addLiquidity(LIQUIDITY_PROVIDER, LP_WETH_AMOUNT);
+
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+        // Swap exact input 100 Token A
+        vm.prank(CREATOR);
+        IERC20Minimal(memecoin).transfer(UNAUTHORIZED_USER, 1 ether);
+
+        vm.startPrank(UNAUTHORIZED_USER);
+
+        IERC20Minimal(memecoin).approve(address(swapRouter), 1 ether);
+        // weth.approve(address(pumpUpHook),10 ether);
+        uint256 balanceOfTokenABefore = poolKey.currency0.balanceOf(UNAUTHORIZED_USER);
+        uint256 balanceOfTokenBBefore = poolKey.currency1.balanceOf(UNAUTHORIZED_USER);
+
+        console.log("balanceOfTokenA before", balanceOfTokenABefore);
+        console.log("balanceOfTokenB before", balanceOfTokenBBefore);
+        console.log("balance of weth-Hook before swap", IERC20Minimal(wethAddress).balanceOf(address(pumpUpHook)));
+        console.log("balance of memecoin-Hook before swap", IERC20Minimal(memecoin).balanceOf(address(pumpUpHook)));
+        console.log("balance of weth-Manager before swap", IERC20Minimal(wethAddress).balanceOf(address(manager)));
+        console.log("balance of memecoin-manager before swap", IERC20Minimal(memecoin).balanceOf(address(manager)));
+
+        bytes memory data = abi.encode(poolId);
+
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: false,
+                amountSpecified: -1 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            settings,
+            data
+        );
+
+        uint256 balanceOfTokenAAfter = poolKey.currency0.balanceOf(UNAUTHORIZED_USER);
+        uint256 balanceOfTokenBAfter = poolKey.currency1.balanceOf(UNAUTHORIZED_USER);
+
+        console.log("balanceOfTokenAAfter", balanceOfTokenAAfter);
+        console.log("balanceOfTokenBAfter", balanceOfTokenBAfter);
+        console.log("balance of weth-Hook after swap", IERC20Minimal(wethAddress).balanceOf(address(pumpUpHook)));
+        console.log("balance of memecoin-Hook after swap", IERC20Minimal(memecoin).balanceOf(address(pumpUpHook)));
+        console.log("balance of weth-Manager after swap", IERC20Minimal(wethAddress).balanceOf(address(manager)));
+        console.log("balance of memecoin-manager after swap", IERC20Minimal(memecoin).balanceOf(address(manager)));
     }
 
     /**

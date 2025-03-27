@@ -117,7 +117,9 @@ contract TestHelper is Test, Deployers {
         vm.startPrank(PROTOCOL_OWNER);
 
         // Initialize the pool state manager
-        poolStateManager.initialize(address(pumpUp), address(strategyManager), address(pumpUpHook), AVS);
+        poolStateManager.initialize(
+            address(pumpUp), address(strategyManager), address(pumpUpHook), AVS, address(manager)
+        );
 
         // Initialize the strategy manager
         strategyManager.initialize(address(poolStateManager));

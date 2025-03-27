@@ -17,6 +17,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IPumpUpHook} from "../src/interfaces/IPumpUpHook.sol";
 import {PumpUpHook} from "../src/PumpUpHook.sol";
 import {IBondingCurveStrategy} from "./interfaces/IBondingCurveStrategy.sol";
+import {Constants} from "./libraries/Constants.sol";
 
 /**
  * @title PoolStateManager
@@ -28,6 +29,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     using CustomRevert for bytes4;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+    using Constants for uint160;
 
     // ============ Enums ============
 
@@ -137,6 +139,9 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     /// @notice Hook contract address (for trading)
     address public hookContract;
 
+    ///@notice Interface for the Pool Contract
+    IPoolManager public poolManager;
+
     /// @notice AVS contract for risk management
     address public avsContract;
 
@@ -197,17 +202,20 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param _hookContract The hook contract address
      * @param _avsContract The AVS contract address
      */
-    function initialize(address _nftContract, address _strategyManager, address _hookContract, address _avsContract)
-        external
-        initializer
-        onlySuperAdmin
-    {
+    function initialize(
+        address _nftContract,
+        address _strategyManager,
+        address _hookContract,
+        address _avsContract,
+        address _poolManager
+    ) external initializer onlySuperAdmin {
         if (_nftContract == address(0) || _strategyManager == address(0) || _hookContract == address(0)) {
             InvalidAddress.selector.revertWith();
         }
 
         nftContract = IPumpUp(_nftContract);
         strategyManager = IStrategyManager(_strategyManager);
+        poolManager = IPoolManager(_poolManager);
         hookContract = _hookContract;
         avsContract = _avsContract;
 
@@ -334,7 +342,7 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
             IPumpUpHook(hookContract).addLiquidity(_poolKey, liquidityparams, msg.sender);
         }
 
-        // poolManager.initialize(_poolKey, Constants.SQRT_PRICE_1_1);
+        poolManager.initialize(_poolKey, Constants.SQRT_PRICE_1_1);
 
         ///@notice need to check whether the pool is initialized
 

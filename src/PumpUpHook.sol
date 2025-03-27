@@ -198,7 +198,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
             InsufficientLiquidity.selector.revertWith();
         }
 
-        console.log("Unchecked Start");
+        // console.log("Unchecked Start");
 
         unchecked {
             // Update liquidity tracking
@@ -206,7 +206,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
             userLiquidity[msg.sender][liquidityParams.poolId][token1Address] -= liquidityParams.amount1;
         }
 
-        console.log("Unchecked Finish");
+        // console.log("Unchecked Finish");
 
         // Call to unlock for token transfers
         poolManager.unlock(
@@ -249,7 +249,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
         uint256 newCirculatingSupply;
         uint256 newWethCollected;
 
-        console.log("I'm here at unclock Step 1");
+        // console.log("I'm here at unclock Step 1");
 
         if (callbackData.isRemove) {
             // For removing liquidity:
@@ -276,11 +276,11 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
 
             if (isMemecoinCurrency0) {
                 // Calculate new circulating supply
-                console.log("I'm here at the first block");
+                // console.log("I'm here at the first block");
                 newCirculatingSupply = currentCirculatingSupply - callbackData.amount0;
                 newWethCollected = currentWethCollected - callbackData.amount1;
             } else {
-                console.log("I'm here at the second block");
+                // console.log("I'm here at the second block");
                 newCirculatingSupply = currentCirculatingSupply - callbackData.amount1;
                 newWethCollected = currentWethCollected - callbackData.amount0;
             }
@@ -327,8 +327,10 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
 
         // Check if pool has transitioned
         bool isTransitioned = poolStateManager.isPoolTransitioned(poolId);
+        console.log("assadad");
 
         if (!isTransitioned) {
+            console.log("Pre Transition phase");
             // For bonding curve swaps
             BeforeSwapDelta beoforeSwapDelta = handleBondingCurveSwap(key, params, poolId, msg.sender);
             return (this.beforeSwap.selector, beoforeSwapDelta, 0);

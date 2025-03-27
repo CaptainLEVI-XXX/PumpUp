@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-/// @notice inspired from the @solady ------ A different approach toward Ownable2Step
+/// @notice Inspired from the @solady ------ A different approach toward Ownable2Step
 
 abstract contract SuperAdmin2Step {
     /// @dev The caller is not authorized to call the function.
