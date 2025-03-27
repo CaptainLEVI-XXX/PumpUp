@@ -29,6 +29,13 @@ abstract contract BondingCurveSwap is BaseHook {
     error SwapTooLarge();
     error ExactOutputNotSupported();
 
+    struct TransitParams{
+        Currency currency0;
+        Currency currency1;
+        uint256 amount0;
+        uint256 amount1;
+    }
+
     // Events
     event TokensPurchased(
         bytes32 indexed poolId, address indexed user, uint256 wethAmount, uint256 tokenAmount, uint256 newPrice
@@ -204,4 +211,23 @@ abstract contract BondingCurveSwap is BaseHook {
             int128(-int256(outputAmount)) // We've already provided this output amount
         );
     }
+
+
+
+    // function _transitPoolToV4(TransitParams calldata params) internal {
+    //      // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+    //     params.currency0.settle(poolManager, address(this), params.amount0, true);
+
+    //     // Then transfer the actual tokens from the PoolManager to the Hook
+    //     poolManager.take(params.currency0,address(this) , params.amount0);
+
+    //       // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+    //     params.currency1.settle(poolManager, address(this), params.amount1, true);
+
+    //     // Then transfer the actual tokens from the PoolManager to the Hook
+    //     poolManager.take(params.currency1,address(this) , params.amount1);
+
+
+    //     ModifyLiquidityParams
+    // }
 }

@@ -50,7 +50,7 @@ contract PumpUpHookTest is Test, TestHelper {
     /**
      * @notice Set up the test environment before each test
      */
-    function setUp() public {
+    function setUp() public virtual {
         // Deploy the protocol contracts
         deployProtocol();
 

@@ -327,10 +327,10 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap {
 
         // Check if pool has transitioned
         bool isTransitioned = poolStateManager.isPoolTransitioned(poolId);
-        console.log("assadad");
+        // console.log("assadad");
 
         if (!isTransitioned) {
-            console.log("Pre Transition phase");
+            // console.log("Pre Transition phase");
             // For bonding curve swaps
             BeforeSwapDelta beoforeSwapDelta = handleBondingCurveSwap(key, params, poolId, msg.sender);
             return (this.beforeSwap.selector, beoforeSwapDelta, 0);
