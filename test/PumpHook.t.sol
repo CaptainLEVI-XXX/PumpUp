@@ -83,7 +83,7 @@ contract PumpUpHookTest is Test, TestHelper {
     /**
      * @notice Test pool creation and initialization
      */
-    function test_PoolCreationAndInitialization() public  {
+    function test_PoolCreationAndInitialization() public {
         // Verify token allocation
         assertEq(IERC20Minimal(memecoin).balanceOf(CREATOR), PREMINE_AMOUNT, "Creator should have premine amount");
         assertEq(

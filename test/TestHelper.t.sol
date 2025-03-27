@@ -52,7 +52,6 @@ contract TestHelper is Test, Deployers {
     // Strategy identifier
     bytes32 public ecStrategyId;
 
-
     /**
      * @notice Deploy all protocol contracts
      */
