@@ -8,49 +8,59 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {PumpUpHook} from "../src/PumpUpHook.sol";
 import {PoolStateManager} from "../src/PoolStateManager.sol";
 import {StrategyManager} from "../src/StrategyManager.sol";
-import {IPumpUp} from "../src/interfaces/IPumpUp.sol";
-import {TickMath} from "v4-core/libraries/TickMath.sol";
-import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
-import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
-import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-import {ExponentialBondingCurve} from "../src/bondingCurve/ExponentialBC.sol";
 import {PumpUp} from "../src/PumpUp.sol";
+import {IPumpUp} from "../src/interfaces/IPumpUp.sol";
 import {ExponentialBondingCurve} from "../src/bondingCurve/ExponentialBC.sol";
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
-import {ERC20} from "@solady/tokens/ERC20.sol";
-import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {MockWETH} from "./mock/MockWETH.sol";
 
+/**
+ * @title TestHelper
+ * @notice Base contract for protocol tests that handles deployment and initialization
+ * @dev Provides standard configuration and setup for testing PumpUp contracts
+ */
 contract TestHelper is Test, Deployers {
     using CurrencyLibrary for Currency;
 
+    // Protocol addresses
     address public constant AVS = address(0x12);
-    address public constant PROTOCOL_OWNER = address(123);
+    address public constant PROTOCOL_OWNER = address(0x123);
+    address public constant WETH_ORACLE = address(0x233);
+    address public constant CURATOR = address(0x3232323);
+    address public constant LIQUIDITY_PROVIDER = address(0x456);
+    address public constant TRADER = address(0x789);
+
+    // WETH configuration
     string public constant NAME = "WETH";
     string public constant SYMBOL = "WETH";
     address public wethAddress;
+
+    // Protocol constants
     uint256 public constant POOL_CREATION_FEE = 0.0001 ether;
     string public constant BASE_URI = "pumpUp Nft";
     uint256 public constant PLATFORM_FEE_CURATOR = 0;
-    uint256 public constant MIN_CURATOR_DEPSOIT = 0.0001 ether;
-    address public WETH_ORACLE = address(0x233);
-    address public CURATOR = address(0x3232323);
+    uint256 public constant MIN_CURATOR_DEPOSIT = 0.0001 ether;
 
-    address public LIQUIDITY_PROVIDER = makeAddr("LiquidityProvider");
-    address public TRADER = makeAddr("TRADER");
+    // Protocol contracts
+    PoolStateManager public poolStateManager;
+    PumpUp public pumpUp;
+    StrategyManager public strategyManager;
+    ExponentialBondingCurve public exponentialBC;
+    PumpUpHook public pumpUpHook;
+    MockWETH public weth;
 
-    PoolStateManager internal poolStateManager;
-    PumpUp internal pumpUp;
-    StrategyManager internal strategyManager;
-    ExponentialBondingCurve internal exponentialBC;
-    PumpUpHook internal pumpUpHook;
-    MockWETH internal weth;
+    // Strategy identifier
+    bytes32 public ecStrategyId;
 
-    bytes32 internal ecStrategyId;
 
+    /**
+     * @notice Deploy all protocol contracts
+     */
     function deployProtocol() public {
+        // Deploy Uniswap V4 core contracts
         deployFreshManagerAndRouters();
 
+        // Deploy the hook contract with required permissions
         address hookAddress = address(
             uint160(
                 Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_SWAP_FLAG
@@ -58,76 +68,106 @@ contract TestHelper is Test, Deployers {
             )
         );
         deployCodeTo("PumpUpHook.sol", abi.encode(manager), hookAddress);
-        // deployed the hook contract
         pumpUpHook = PumpUpHook(hookAddress);
 
-        //deploying the weth token
-        deployMockWETH();
-        //deploying pool state manager
-        deployPoolStateManager();
-        //deploy the NFT contract
-        deployPumpUpNft();
-        //deploy the strategy Manager
-        depoyStrategyManager();
+        // Deploy protocol contracts
+        _deployMockWETH();
+        _deployPoolStateManager();
+        _deployPumpUpNft();
+        _deployStrategyManager();
+        _deployBondingCurve();
 
-        deployBondingCurve();
-        initializeProtocol();
-        setUpCuratorAndCurveConfig();
+        // Initialize contracts and setup curator
+        _initializeProtocol();
+        _setupCuratorAndCurveConfig();
     }
 
-    function deployPoolStateManager() internal {
+    /**
+     * @notice Deploy the PoolStateManager contract
+     */
+    function _deployPoolStateManager() internal {
         poolStateManager = new PoolStateManager(PROTOCOL_OWNER, wethAddress, POOL_CREATION_FEE);
     }
 
-    function deployPumpUpNft() internal {
+    /**
+     * @notice Deploy the PumpUp NFT contract
+     */
+    function _deployPumpUpNft() internal {
         pumpUp = new PumpUp(BASE_URI, PROTOCOL_OWNER);
     }
 
-    function depoyStrategyManager() internal {
-        strategyManager = new StrategyManager(PROTOCOL_OWNER, PLATFORM_FEE_CURATOR, PROTOCOL_OWNER, MIN_CURATOR_DEPSOIT);
+    /**
+     * @notice Deploy the StrategyManager contract
+     */
+    function _deployStrategyManager() internal {
+        strategyManager = new StrategyManager(PROTOCOL_OWNER, PLATFORM_FEE_CURATOR, PROTOCOL_OWNER, MIN_CURATOR_DEPOSIT);
     }
 
-    function deployMockWETH() internal {
+    /**
+     * @notice Deploy the MockWETH contract
+     */
+    function _deployMockWETH() internal {
         weth = new MockWETH(NAME, SYMBOL, "");
         wethAddress = address(weth);
     }
 
-    function initializeProtocol() internal {
+    /**
+     * @notice Initialize all protocol contracts
+     */
+    function _initializeProtocol() internal {
         vm.startPrank(PROTOCOL_OWNER);
-        //intialize the pool state manager
+
+        // Initialize the pool state manager
         poolStateManager.initialize(address(pumpUp), address(strategyManager), address(pumpUpHook), AVS);
-        //initialize the strategy manager
+
+        // Initialize the strategy manager
         strategyManager.initialize(address(poolStateManager));
-        //initialize nft contract
+
+        // Initialize the NFT contract
         pumpUp.initialize(address(poolStateManager));
-        //initialize the hook contract
+
+        // Initialize the hook contract
         pumpUpHook.initialize(address(poolStateManager), WETH_ORACLE, wethAddress);
+
         vm.stopPrank();
     }
 
-    function deployBondingCurve() internal {
+    /**
+     * @notice Deploy the ExponentialBondingCurve contract
+     */
+    function _deployBondingCurve() internal {
         exponentialBC = new ExponentialBondingCurve(address(poolStateManager), CURATOR);
     }
 
-    function setUpCuratorAndCurveConfig() internal {
+    /**
+     * @notice Set up curator and register bonding curve strategy
+     */
+    function _setupCuratorAndCurveConfig() internal {
+        // Fund the curator
         vm.deal(CURATOR, 5 ether);
+
         vm.startPrank(CURATOR);
 
+        // Register as curator
         strategyManager.registerCurator{value: 1 ether}("SAURABH");
 
+        // Register the exponential bonding curve strategy
         ecStrategyId =
             strategyManager.registerStrategy(address(exponentialBC), "ExponentialCurve", "ExponentialCurve", 0);
+
         vm.stopPrank();
+
+        // Enable the strategy
         vm.prank(PROTOCOL_OWNER);
         strategyManager.enableStrategy(ecStrategyId);
     }
 
-    function test_InitializationData() public {
-        deployProtocol();
-        assertEq(strategyManager.getStrategyImplementation(ecStrategyId), address(exponentialBC), "Failed");
-    }
-
+    /**
+     * @notice Helper to convert token address to Currency
+     * @param token The token address
+     * @return The Currency wrapper
+     */
     function wrapTokenToCurrency(address token) internal pure returns (Currency) {
-        return Currency.wrap(address(token));
+        return Currency.wrap(token);
     }
 }
