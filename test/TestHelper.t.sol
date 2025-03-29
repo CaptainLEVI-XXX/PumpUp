@@ -126,7 +126,7 @@ contract TestHelper is Test, Deployers {
         pumpUp.initialize(address(poolStateManager));
 
         // Initialize the hook contract
-        pumpUpHook.initialize(address(poolStateManager), WETH_ORACLE, wethAddress);
+        pumpUpHook.initialize(address(poolStateManager), WETH_ORACLE, wethAddress, address(modifyLiquidityRouter));
 
         vm.stopPrank();
     }

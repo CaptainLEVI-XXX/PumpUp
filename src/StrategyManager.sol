@@ -9,7 +9,7 @@ import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
 /**
  * @title StrategyManager
- * @author SWAPUMP
+ * @author PUMPUP
  * @notice Contract for managing bonding curve strategies
  * @dev Allows curators to register and manage different bonding curve strategies
  */

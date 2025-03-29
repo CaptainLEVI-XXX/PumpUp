@@ -460,6 +460,12 @@ contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTrans
 
     // ============ View Functions ============
 
+    function checkTransitionConditions_With_AVS(bytes32 poolId) public view poolExists(poolId) returns (bool _canTransition, bool isSafe){
+        _canTransition = canTransition(poolId);
+        (isSafe,,,) = checkTransitionRisk(poolId);
+        return (_canTransition,isSafe);
+    }
+
     /**
      * @notice Check if a pool can transition to AMM
      * @param poolId The ID of the pool
@@ -487,6 +493,8 @@ contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTrans
 
         return false;
     }
+
+ 
 
     /**
      * @notice Get custom data for a strategy

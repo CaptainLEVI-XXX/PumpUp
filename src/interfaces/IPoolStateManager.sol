@@ -44,7 +44,6 @@ interface IPoolStateManager {
             uint256 currentPrice
         );
 
-
-        function checkTransitionConditions_With_AVS(bytes32) external view returns(bool,bool);
-        function setPoolTransitioned(bytes32,bool) external;
+    function checkTransitionConditions_With_AVS(bytes32) external view returns (bool, bool);
+    function setPoolTransitioned(bytes32, bool) external;
 }

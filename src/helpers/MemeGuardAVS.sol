@@ -150,7 +150,7 @@ abstract contract MemeGuardAVS {
     {
         // Skip check if risk assessment is disabled
         if (!riskAssessmentEnabled || address(memeGuardServiceManager) == address(0)) {
-            return (true, false, 0, false);
+            return (false, false, 0, false);
         }
 
         // Call the MemeGuard AVS

@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {Hooks, IHooks} from "v4-core/libraries/Hooks.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {CurrencySettler} from "@uniswap/v4-core/test/utils/CurrencySettler.sol";
@@ -20,7 +20,9 @@ import {BondingCurveSwap} from "./helpers/BondingCurveHandler.sol";
 import {console} from "forge-std/console.sol";
 import {IERC20Minimal} from "v4-core/interfaces/external/IERC20Minimal.sol";
 import {MemeGuardAVS} from "./helpers/MemeGuardAVS.sol";
-import {LiquidityAmounts} from "v4-core/test/utils/LiquidityAmounts.sol";
+import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {PoolModifyLiquidityTest} from "v4-core/test/PoolModifyLiquidityTest.sol";
 
 contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
     using CurrencySettler for Currency;
@@ -46,6 +48,8 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
     // WETH price oracle contract
     IPriceOracle private wethPriceOracle;
 
+    PoolModifyLiquidityTest private modifyLiquidityRouter;
+
     struct CallbackData {
         uint256 amount0;
         uint256 amount1;
@@ -62,8 +66,6 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         bytes32 poolId;
     }
 
-
-
     // Add this event to your contract
     event PoolTransitionedToV4(
         bytes32 indexed poolId, uint256 memecoinLiquidity, uint256 wethLiquidity, uint256 price, uint256 timestamp
@@ -74,7 +76,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
 
     constructor(IPoolManager _manager, address _avsContract) BaseHook(_manager) MemeGuardAVS(_avsContract) {}
 
-    function initialize(address _poolStateManager, address _wethPriceOracle, address _wethAddress)
+    function initialize(address _poolStateManager, address _wethPriceOracle, address _wethAddress, address _lprouter)
         external
         initializer
     {
@@ -82,6 +84,7 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
             ZeroAddress.selector.revertWith();
         }
         wethPriceOracle = IPriceOracle(_wethPriceOracle);
+        modifyLiquidityRouter = PoolModifyLiquidityTest(_lprouter);
         initializeBondingCurveSwap(IPoolStateManager(_poolStateManager), _wethAddress);
     }
 
@@ -329,6 +332,14 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         // Update pool state in the PoolStateManager
         poolStateManager.updatePoolState(callbackData.poolId, newCirculatingSupply, newWethCollected, newPrice);
 
+        (bool canTransition, bool isSafe) = poolStateManager.checkTransitionConditions_With_AVS(callbackData.poolId);
+        
+
+        // check if the pool transition can take place after the 
+        if (canTransition && isSafe) {
+            transitionToV4Pool(callbackData.currency0, callbackData.currency1, callbackData.poolId);
+        }
+
         return "";
     }
 
@@ -403,28 +414,23 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
 
     /**
      * @notice Transition liquidity from bonding curve to V4 pool
-     * @param params Pool key for the V4 pool
+     * @param currency0 Pool key for the V4 pool
+     * @param currency1 Currency 1
      * @param poolId Identifier for the pool
      * @dev This function moves all liquidity from the bonding curve mechanism to a standard V4 pool
      */
-    function transitionToV4Pool(PoolKey calldata params, bytes32 poolId) internal {
-
+    function transitionToV4Pool(Currency currency0, Currency currency1, bytes32 poolId) internal {
         // 2. Check if pool has already transitioned
         bool isTransitioned = poolStateManager.isPoolTransitioned(poolId);
-        if (isTransitioned)  PoolTransitioned.selector.revertWith();
-
-        // 1. Check if pool is eligible for transition
-        (bool  canTransition,bool isSafe) = poolStateManager.checkTransitionConditions_With_AVS(poolId);
-        if (!canTransition || !isSafe ) TransitionConditionsNotMet.selector.revertWith();
-
+        if (isTransitioned) PoolTransitioned.selector.revertWith();
 
         // 4. Get token addresses and current pool state
-        address token0Address = Currency.unwrap(params.currency0);
-        address token1Address = Currency.unwrap(params.currency1);
+        address token0Address = Currency.unwrap(currency0);
+        address token1Address = Currency.unwrap(currency1);
 
         (
             address memecoinAddress,
-            address bondingCurveImplementation,
+            ,
             uint256 currentCirculatingSupply,
             uint256 currentWethCollected,
             uint256 currentPrice
@@ -433,62 +439,74 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         // 5. Determine which token is the memecoin
         bool isMemecoinCurrency0 = (memecoinAddress == token0Address);
 
+        IERC20 token0Dispatcher = IERC20(token0Address);
+        IERC20 token1Dispatcher = IERC20(token1Address);
         // 6. Calculate initial liquidity for V4 pool based on bonding curve state
         uint256 memecoinLiquidity = currentCirculatingSupply;
         uint256 wethLiquidity = currentWethCollected;
 
-
-        if(isMemecoinCurrency0){
-
-         // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-        params.currency0.settle(poolManager, address(this),memecoinLiquidity , true);
-
-        // Then transfer the actual tokens from the PoolManager to the user
-        poolManager.take(params.currency0, address(this), memecoinLiquidity);
-
-        // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-        params.currency1.settle(poolManager, address(this),wethLiquidity, true);
-
-        // Then transfer the actual tokens from the PoolManager to the user
-        poolManager.take(params.currency1, address(this), wethLiquidity);
-
-        }else{
-        
-        // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-        params.currency0.settle(poolManager, address(this), wethLiquidity, true);
-
-        // Then transfer the actual tokens from the PoolManager to the user
-        poolManager.take(params.currency1, address(this), wethLiquidity);
-        // Burn claim tokens first (give up our claim to tokens in the PoolManager)
-        params.currency1.settle(poolManager, address(this), memecoinLiquidity, true);
-
-        // Then transfer the actual tokens from the PoolManager to the user
-        poolManager.take(params.currency0, address(this),memecoinLiquidity);
-        }
-
-        // 7. Initialize the V4 pool with the correct initial price
-        // We need to calculate the sqrtPriceX96 for V4 pool
         uint160 sqrtPriceX96 = calculateSqrtPriceX96(currentPrice, isMemecoinCurrency0);
 
-        // 8. Initialize the V4 pool with the appropriate parameters
+        uint128 liq;
+
+        PoolKey memory poolKey = PoolKey(currency0, currency1, 0, 60, IHooks(address(this)));
+
         // This will set the initial price of the pool
-        poolManager.initialize(params, sqrtPriceX96);
+        poolManager.initialize(poolKey, sqrtPriceX96);
 
-        // 9. Add liquidity to the V4 pool
-        // We'll create the necessary liquidity parameters
-        int24 tickLower = calculateTickLower(currentPrice);
-        int24 tickUpper = calculateTickUpper(currentPrice);
+        int24 MIN_TICK = -887272;
+        int24 MAX_TICK = 887272;
 
-        IPoolManager.ModifyLiquidityParams memory liquidityParams = IPoolManager.ModifyLiquidityParams({
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            liquidityDelta: calculateLiquidityDelta(memecoinLiquidity, wethLiquidity, currentPrice, tickLower, tickUpper),
-            salt:bytes32(0)
-        });
+        if (isMemecoinCurrency0) {
+            // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+            currency0.settle(poolManager, address(this), memecoinLiquidity, true);
 
-        // 10. Add the liquidity to the V4 pool
-        // We need to move the tokens from the hook to the pool
-        poolManager.modifyLiquidity(params, liquidityParams, abi.encode(poolId));
+            // Then transfer the actual tokens from the PoolManager to the user
+            poolManager.take(currency0, address(this), memecoinLiquidity);
+
+            // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+            currency1.settle(poolManager, address(this), wethLiquidity, true);
+
+            // Then transfer the actual tokens from the PoolManager to the user
+            poolManager.take(currency1, address(this), wethLiquidity);
+
+            liq = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(MIN_TICK),
+                TickMath.getSqrtPriceAtTick(MAX_TICK),
+                wethLiquidity,
+                token0Dispatcher.balanceOf(address(this))
+            );
+        } else {
+            // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+            currency0.settle(poolManager, address(this), wethLiquidity, true);
+
+            // Then transfer the actual tokens from the PoolManager to the Hook
+            poolManager.take(currency1, address(this), wethLiquidity);
+            // Burn claim tokens first (give up our claim to tokens in the PoolManager)
+            currency1.settle(poolManager, address(this), memecoinLiquidity, true);
+
+            // Then transfer the actual tokens from the PoolManager to the Hook
+            poolManager.take(currency0, address(this), memecoinLiquidity);
+
+            liq = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(MIN_TICK),
+                TickMath.getSqrtPriceAtTick(MAX_TICK),
+                wethLiquidity,
+                token1Dispatcher.balanceOf(address(this))
+            );
+        }
+        token0Dispatcher.approve(address(modifyLiquidityRouter), type(uint256).max);
+        token1Dispatcher.approve(address(modifyLiquidityRouter), type(uint256).max);
+
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            IPoolManager.ModifyLiquidityParams(
+                TickMath.minUsableTick(60), TickMath.maxUsableTick(60), int256(int128(liq)), 0
+            ),
+            new bytes(0)
+        );
 
         // 11. Mark the pool as transitioned in the pool state manager
         poolStateManager.setPoolTransitioned(poolId, true);
@@ -512,72 +530,6 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         uint256 sqrtPriceX96Value = (sqrtPrice * (1 << 96)) / 1e9; // Convert to Q64.96
 
         return uint160(sqrtPriceX96Value);
-    }
-
-    /**
-     * @notice Calculate the lower tick for the initial position
-     * @param price Current price from bonding curve
-     * @return Lower tick boundary
-     */
-    function calculateTickLower(uint256 price) internal pure returns (int24) {
-        // Calculate a lower tick that is roughly 50% below current price
-        int24 tick = getTickAtPrice(price * 5 / 10);
-        // Ensure the tick is on the tick spacing
-        return (tick / 60) * 60; // Assuming tick spacing of 60
-    }
-
-    /**
-     * @notice Calculate the upper tick for the initial position
-     * @param price Current price from bonding curve
-     * @return Upper tick boundary
-     */
-    function calculateTickUpper(uint256 price) internal pure returns (int24) {
-        // Calculate an upper tick that is roughly 50% above current price
-        int24 tick = getTickAtPrice(price * 15 / 10);
-        // Ensure the tick is on the tick spacing
-        return ((tick / 60) + 1) * 60; // Assuming tick spacing of 60
-    }
-
-    /**
-     * @notice Get the tick from a given price
-     * @param price The price to convert to a tick
-     * @return The tick corresponding to the price
-     */
-    function getTickAtPrice(uint256 price) internal pure returns (int24) {
-        // Following the formula: tick = log(price) / log(1.0001)
-        // For simplicity, we use a rough approximation
-        // In production, use a proper logarithm implementation
-        int256 logPrice = (price < 1e18)
-            ? -int256(log2(1e18 / price) * 1e18 / log2(1.0001e18))
-            : int256(log2(price / 1e18) * 1e18 / log2(1.0001e18));
-
-        return int24(logPrice / 1e18);
-    }
-
-    /**
-     * @notice Calculate liquidity delta for V4 pool
-     * @param memecoinAmount Amount of memecoin
-     * @param wethAmount Amount of WETH
-     * @param price Current price
-     * @param tickLower Lower tick boundary
-     * @param tickUpper Upper tick boundary
-     * @return liquidityDelta Liquidity delta for the V4 pool
-     */
-    function calculateLiquidityDelta(
-        uint256 memecoinAmount,
-        uint256 wethAmount,
-        uint256 price,
-        int24 tickLower,
-        int24 tickUpper
-    ) internal pure returns (int128) {
-        // This is a simplification of the liquidity calculation
-        // In production, use the proper V4 formulas for liquidity calculation
-
-        // Calculate liquidity based on geometric mean of token amounts
-        uint256 liquidityValue = sqrt(memecoinAmount * wethAmount);
-
-        // Return as int128 (positive for adding liquidity)
-        return int128(int256(liquidityValue));
     }
 
     /**
@@ -642,5 +594,4 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         // Return scaled by 1e18 for precision
         return n * 1e18;
     }
-
 }
