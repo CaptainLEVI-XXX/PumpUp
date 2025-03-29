@@ -35,3 +35,5 @@
 - Maintains state for all pools
 - Provides storage for strategy-specific data
 - Ensures proper isolation between pools
+
+

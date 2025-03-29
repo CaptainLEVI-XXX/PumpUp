@@ -18,14 +18,15 @@ import {IPumpUpHook} from "../src/interfaces/IPumpUpHook.sol";
 import {PumpUpHook} from "../src/PumpUpHook.sol";
 import {IBondingCurveStrategy} from "./interfaces/IBondingCurveStrategy.sol";
 import {Constants} from "./libraries/Constants.sol";
+import {MemeGuardAVS} from "./helpers/MemeGuardAVS.sol";
 
 /**
  * @title PoolStateManager
- * @author SWAPUMP
+ * @author PumpUp
  * @notice Manages the state for all token pools and handles token creation
  * @dev No trading functionality - that belongs in the hooks contract
  */
-contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initializable {
+contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTransient, Initializable {
     using CustomRevert for bytes4;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -142,9 +143,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     ///@notice Interface for the Pool Contract
     IPoolManager public poolManager;
 
-    /// @notice AVS contract for risk management
-    address public avsContract;
-
     /// @notice Authorized addresses that can update pool state
     mapping(address => bool) public authorizedAddresses;
 
@@ -154,9 +152,10 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
     error PoolNotFound();
     error StrategyNotFound();
     error NotAuthorized();
-    error InvalidAddress();
     error InsufficientPoolCreationFee();
     error InvalidTransitionParams();
+
+    // ============ Errors ============
 
     // ============ Modifiers ============
 
@@ -188,8 +187,12 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param _weth The WETH address
      * @param _poolCreationFee Fee for creating a pool
      */
-    constructor(address _owner, address _weth, uint256 _poolCreationFee) {
-        if (_weth == address(0) || _owner == address(0)) InvalidAddress.selector.revertWith();
+    constructor(address _owner, address _weth, uint256 _poolCreationFee, address _avsContract)
+        MemeGuardAVS(_avsContract)
+    {
+        if (_weth == address(0) || _owner == address(0) || _avsContract == address(0)) {
+            InvalidAddress.selector.revertWith();
+        }
         weth = _weth;
         poolCreationFee = _poolCreationFee;
         _setSuperAdmin(_owner);
@@ -200,15 +203,12 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param _nftContract The NFT contract address
      * @param _strategyManager The strategy manager contract address
      * @param _hookContract The hook contract address
-     * @param _avsContract The AVS contract address
      */
-    function initialize(
-        address _nftContract,
-        address _strategyManager,
-        address _hookContract,
-        address _avsContract,
-        address _poolManager
-    ) external initializer onlySuperAdmin {
+    function initialize(address _nftContract, address _strategyManager, address _hookContract, address _poolManager)
+        external
+        initializer
+        onlySuperAdmin
+    {
         if (_nftContract == address(0) || _strategyManager == address(0) || _hookContract == address(0)) {
             InvalidAddress.selector.revertWith();
         }
@@ -217,7 +217,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         strategyManager = IStrategyManager(_strategyManager);
         poolManager = IPoolManager(_poolManager);
         hookContract = _hookContract;
-        avsContract = _avsContract;
 
         // Authorize the hook contract to update pool state
         authorizedAddresses[_hookContract] = true;
@@ -248,6 +247,10 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         if (curveImplementation == address(0)) {
             StrategyNotFound.selector.revertWith();
         }
+
+        // Check strategy risk if AVS is enabled
+        (bool strategyAllowed,,,) = checkStrategyRisk(bondingCurveStrategy);
+        if (!strategyAllowed) HealthFactorNotPassed.selector.revertWith();
 
         // Validate launch parameters
         if (launchParams.initialSupply == 0) {
@@ -302,6 +305,28 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
         emit PoolCreated(poolId, tokenAddress, creator, bondingCurveStrategy);
 
         return (poolId, tokenAddress, nftId);
+    }
+
+    /**
+     * @notice Abstract function to enable/disable risk assessment
+     */
+    function toggleRiskAssessmentEnabled() external virtual onlySuperAdmin {
+        riskAssessmentEnabled = !riskAssessmentEnabled;
+    }
+
+    /**
+     * @notice Abstract function to set risk thresholds
+     * @param _strategyRiskThreshold Maximum allowed strategy risk score
+     * @param _tokenRiskThreshold Maximum allowed token risk score
+     * @param _transitionRiskThreshold Maximum allowed transition risk score
+     */
+    function setRiskThresholds(uint8 _strategyRiskThreshold, uint8 _tokenRiskThreshold, uint8 _transitionRiskThreshold)
+        public
+        virtual
+        override(MemeGuardAVS)
+        onlySuperAdmin
+    {
+        super.setRiskThresholds(_strategyRiskThreshold, _tokenRiskThreshold, _transitionRiskThreshold);
     }
 
     function initializePool(uint256 wethAmount, bytes32 poolId)
@@ -610,14 +635,11 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
      * @param _nftContract New NFT contract address
      * @param _strategyManager New strategy manager address
      * @param _hookContract New hook contract address
-     * @param _avsContract New AVS contract address
      */
-    function updateContractReferences(
-        address _nftContract,
-        address _strategyManager,
-        address _hookContract,
-        address _avsContract
-    ) external onlySuperAdmin {
+    function updateContractReferences(address _nftContract, address _strategyManager, address _hookContract)
+        external
+        onlySuperAdmin
+    {
         if (_nftContract != address(0)) {
             nftContract = IPumpUp(_nftContract);
         }
@@ -633,10 +655,6 @@ contract PoolStateManager is SuperAdmin2Step, ReentrancyGuardTransient, Initiali
             // Update and authorize new hook contract
             hookContract = _hookContract;
             authorizedAddresses[_hookContract] = true;
-        }
-
-        if (_avsContract != address(0)) {
-            avsContract = _avsContract;
         }
     }
 

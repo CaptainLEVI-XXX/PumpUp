@@ -27,6 +27,7 @@ abstract contract BondingCurveSwap is BaseHook {
     error InvalidTokenPath();
     error SwapTooLarge();
     error ExactOutputNotSupported();
+    error Restricted();
 
     // Events
     event TokensPurchased(
@@ -64,6 +65,11 @@ abstract contract BondingCurveSwap is BaseHook {
 
     IPoolStateManager public poolStateManager;
     address public wethAddress;
+
+    modifier onlyPoolStateManager() {
+        if (msg.sender != address(poolStateManager)) Restricted.selector.revertWith();
+        _;
+    }
 
     function initializeBondingCurveSwap(IPoolStateManager _poolStateManager, address _wethAddress) internal {
         poolStateManager = _poolStateManager;

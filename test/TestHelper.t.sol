@@ -66,7 +66,7 @@ contract TestHelper is Test, Deployers {
                     | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
             )
         );
-        deployCodeTo("PumpUpHook.sol", abi.encode(manager), hookAddress);
+        deployCodeTo("PumpUpHook.sol", abi.encode(manager, AVS), hookAddress);
         pumpUpHook = PumpUpHook(hookAddress);
 
         // Deploy protocol contracts
@@ -85,7 +85,7 @@ contract TestHelper is Test, Deployers {
      * @notice Deploy the PoolStateManager contract
      */
     function _deployPoolStateManager() internal {
-        poolStateManager = new PoolStateManager(PROTOCOL_OWNER, wethAddress, POOL_CREATION_FEE);
+        poolStateManager = new PoolStateManager(PROTOCOL_OWNER, wethAddress, POOL_CREATION_FEE, AVS);
     }
 
     /**
@@ -117,9 +117,7 @@ contract TestHelper is Test, Deployers {
         vm.startPrank(PROTOCOL_OWNER);
 
         // Initialize the pool state manager
-        poolStateManager.initialize(
-            address(pumpUp), address(strategyManager), address(pumpUpHook), AVS, address(manager)
-        );
+        poolStateManager.initialize(address(pumpUp), address(strategyManager), address(pumpUpHook), address(manager));
 
         // Initialize the strategy manager
         strategyManager.initialize(address(poolStateManager));
