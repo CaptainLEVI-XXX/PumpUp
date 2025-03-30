@@ -292,10 +292,6 @@ contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTrans
         // Increment strategy usage count
         strategyManager.incrementUsageCount(bondingCurveStrategy);
 
-        // IERC20(weth).transferFrom(msg.sender,address(this),launchParams.wethAmount);
-
-        // _initializeV4Pool(launchParams,tokenAddress,poolId);
-
         // Refund excess ETH
         if (msg.value > poolCreationFee) {
             (bool success,) = payable(msg.sender).call{value: msg.value - poolCreationFee}("");
@@ -460,10 +456,15 @@ contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTrans
 
     // ============ View Functions ============
 
-    function checkTransitionConditions_With_AVS(bytes32 poolId) public view poolExists(poolId) returns (bool _canTransition, bool isSafe){
+    function checkTransitionConditions_With_AVS(bytes32 poolId)
+        public
+        view
+        poolExists(poolId)
+        returns (bool _canTransition, bool isSafe)
+    {
         _canTransition = canTransition(poolId);
         (isSafe,,,) = checkTransitionRisk(poolId);
-        return (_canTransition,isSafe);
+        return (_canTransition, isSafe);
     }
 
     /**
@@ -493,8 +494,6 @@ contract PoolStateManager is MemeGuardAVS, SuperAdmin2Step, ReentrancyGuardTrans
 
         return false;
     }
-
- 
 
     /**
      * @notice Get custom data for a strategy

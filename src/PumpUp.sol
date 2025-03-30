@@ -12,8 +12,8 @@ import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
     using CustomRevert for bytes4;
 
-    string internal name_ = "Capstone Project Nft";
-    string internal symbol_ = "CPnft";
+    string internal name_ = "PumpUp";
+    string internal symbol_ = "PUp";
 
     string public baseURI;
 
@@ -26,10 +26,16 @@ contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
 
     error InvalidInitialSupply(uint256 supply);
     error PremineExceedsInitialAmount(uint256 premine, uint256 initialAmount);
+    error InvalidCall();
 
     constructor(string memory _baseUri, address owner) {
         _setSuperAdmin(owner);
         baseURI = _baseUri;
+    }
+
+    modifier onlyPoolStateManager() {
+        if (msg.sender != address(poolStateManager)) InvalidCall.selector.revertWith();
+        _;
     }
 
     function initialize(address _poolStateManager) external onlySuperAdmin initializer {
@@ -66,6 +72,7 @@ contract PumpUp is Initializable, ERC721, SuperAdmin2Step {
      */
     function launchMemeCoin(PoolStateManager.LaunchParams calldata params)
         external
+        onlyPoolStateManager
         returns (address _memecoin, uint256 _tokenId)
     {
         // Uncomment these validations for production

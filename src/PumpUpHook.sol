@@ -333,9 +333,8 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         poolStateManager.updatePoolState(callbackData.poolId, newCirculatingSupply, newWethCollected, newPrice);
 
         (bool canTransition, bool isSafe) = poolStateManager.checkTransitionConditions_With_AVS(callbackData.poolId);
-        
 
-        // check if the pool transition can take place after the 
+        // check if the pool transition can take place after the
         if (canTransition && isSafe) {
             transitionToV4Pool(callbackData.currency0, callbackData.currency1, callbackData.poolId);
         }
@@ -428,13 +427,8 @@ contract PumpUpHook is Initializable, BaseHook, BondingCurveSwap, MemeGuardAVS {
         address token0Address = Currency.unwrap(currency0);
         address token1Address = Currency.unwrap(currency1);
 
-        (
-            address memecoinAddress,
-            ,
-            uint256 currentCirculatingSupply,
-            uint256 currentWethCollected,
-            uint256 currentPrice
-        ) = poolStateManager.getInfoForHook(poolId);
+        (address memecoinAddress,, uint256 currentCirculatingSupply, uint256 currentWethCollected, uint256 currentPrice)
+        = poolStateManager.getInfoForHook(poolId);
 
         // 5. Determine which token is the memecoin
         bool isMemecoinCurrency0 = (memecoinAddress == token0Address);
